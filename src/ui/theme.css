@@ -1,0 +1,283 @@
+/* ═══════════════════════════════════════
+   VTE Agent Design System
+   ═══════════════════════════════════════ */
+
+/* ── Tokens ── */
+:root {
+  /* Brand */
+  --vte-primary: #6366f1;
+  --vte-primary-hover: #818cf8;
+  --vte-primary-muted: rgba(99,102,241,0.15);
+
+  /* Surface */
+  --vte-bg: var(--vscode-sideBar-background);
+  --vte-bg-elevated: var(--vscode-editor-background);
+  --vte-bg-overlay: var(--vscode-editor-background);
+  --vte-border: var(--vscode-widget-border);
+  --vte-border-focus: var(--vte-primary);
+
+  /* Text */
+  --vte-text: var(--vscode-foreground);
+  --vte-text-muted: var(--vscode-descriptionForeground);
+  --vte-text-inverse: #ffffff;
+
+  /* Input */
+  --vte-input-bg: var(--vscode-input-background);
+  --vte-input-border: var(--vscode-input-border);
+  --vte-input-radius: 8px;
+
+  /* Button */
+  --vte-btn-bg: var(--vscode-button-background);
+  --vte-btn-fg: var(--vscode-button-foreground);
+  --vte-btn-hover: var(--vscode-button-hoverBackground);
+
+  /* Feedback */
+  --vte-success: var(--vscode-terminal-ansiGreen);
+  --vte-error: var(--vscode-errorForeground);
+
+  /* Radius */
+  --vte-r-xs: 4px;
+  --vte-r-sm: 6px;
+  --vte-r-md: 8px;
+  --vte-r-lg: 12px;
+  --vte-r-xl: 16px;
+
+  /* Spacing */
+  --vte-sp-xs: 4px;
+  --vte-sp-sm: 8px;
+  --vte-sp-md: 12px;
+  --vte-sp-lg: 16px;
+
+  /* Shadow */
+  --vte-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  --vte-shadow-sm: 0 2px 8px rgba(0,0,0,0.15);
+
+  /* Transition */
+  --vte-transition: 0.15s ease;
+}
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vte-text);
+  background: var(--vte-bg);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════
+   Components
+   ═══════════════════════════════════════ */
+
+/* ── VTE Input ── */
+.vte-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--vte-input-radius);
+  border: 1px solid var(--vte-input-border);
+  background: var(--vte-input-bg);
+  color: var(--vte-text);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--vte-transition);
+}
+.vte-input:focus { border-color: var(--vte-border-focus); }
+.vte-input::placeholder { color: var(--vte-text-muted); opacity: 0.5; }
+
+/* ── VTE Button ── */
+.vte-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--vte-r-sm);
+  border: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--vte-transition);
+  white-space: nowrap;
+}
+.vte-btn-primary {
+  background: var(--vte-primary);
+  color: var(--vte-text-inverse);
+}
+.vte-btn-primary:hover { background: var(--vte-primary-hover); }
+.vte-btn-ghost {
+  background: transparent;
+  color: var(--vte-text-muted);
+}
+.vte-btn-ghost:hover {
+  background: var(--vte-bg-elevated);
+  color: var(--vte-text);
+}
+
+/* ── VTE Select (custom) ── */
+.vte-select-wrap {
+  position: relative;
+  display: inline-block;
+}
+.vte-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--vte-input-bg);
+  border: 1px solid var(--vte-input-border);
+  border-radius: var(--vte-r-sm);
+  color: var(--vte-text);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 5px 28px 5px 10px;
+  outline: none;
+  cursor: pointer;
+  min-width: 120px;
+  transition: border-color var(--vte-transition);
+}
+.vte-select:focus { border-color: var(--vte-border-focus); }
+.vte-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--vte-text-muted);
+  pointer-events: none;
+}
+.vte-select option {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+}
+
+/* ── VTE Slider ── */
+.vte-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vte-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 80px;
+  height: 4px;
+  background: var(--vte-input-border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  transition: background var(--vte-transition);
+}
+.vte-slider:hover { background: var(--vte-text-muted); }
+.vte-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--vte-primary);
+  border: 2px solid var(--vte-bg-elevated);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  cursor: pointer;
+  transition: transform var(--vte-transition);
+}
+.vte-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.vte-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--vte-primary);
+  border: 2px solid var(--vte-bg-elevated);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  cursor: pointer;
+}
+.vte-slider-val {
+  font-size: 10px;
+  color: var(--vte-text-muted);
+  min-width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family);
+}
+
+/* ── VTE Label ── */
+.vte-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--vte-text);
+}
+
+/* ── VTE Popup ── */
+.vte-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 8px;
+  background: var(--vte-bg-overlay);
+  border: 1px solid var(--vte-border);
+  border-radius: var(--vte-r-lg);
+  padding: var(--vte-sp-md);
+  min-width: 280px;
+  box-shadow: var(--vte-shadow);
+  z-index: 100;
+  display: none;
+}
+.vte-popup.open { display: block; }
+.vte-popup-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vte-text-muted);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--vte-border);
+}
+.vte-popup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+/* ── VTE Tooltip ── */
+.vte-tip {
+  position: relative;
+}
+.vte-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border-radius: var(--vte-r-xs);
+  background: var(--vte-bg-overlay);
+  border: 1px solid var(--vte-border);
+  color: var(--vte-text);
+  font-size: 10px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--vte-transition);
+  box-shadow: var(--vte-shadow-sm);
+}
+.vte-tip:hover::after { opacity: 1; }
+
+/* ── VTE Divider ── */
+.vte-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--vte-border);
+  margin: 0 4px;
+}
