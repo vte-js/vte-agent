@@ -3,4 +3,5 @@ out/
 *.vsix
 .vscode-test/
 .DS_Store
-.mimocode/
+.mimocode/node_modules/
+.mimocode/.cron-lock
