@@ -58,8 +58,9 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile && npm run build:webview",
+    "vscode:prepublish": "npm run compile && npm run copy:assets && npm run build:webview",
     "compile": "tsc -p ./",
+    "copy:assets": "cp src/agent/default-rules.md out/agent/default-rules.md 2>/dev/null || true",
     "watch": "tsc -watch -p ./",
     "build:webview": "cd webview && npx vite build",
     "dev:webview": "cd webview && npx vite"

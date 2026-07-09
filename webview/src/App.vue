@@ -7,10 +7,13 @@
     @execute-plan="onExecutePlan"
     @delete-message="chat.deleteMessage"
     @start-edit="editRef = $event"
+    @feedback="onFeedback"
   />
   </div>
   <div class="config-overlay" v-if="configVisible">
     <ConfigPanel
+      :models="config.models.value"
+      :active-model-index="config.activeModelIndex.value"
       :initial-api-key="config.apiKey.value"
       :initial-api-base="config.apiBase.value"
       :initial-model="config.model.value"
@@ -21,6 +24,9 @@
       :max-tokens="maxTokens"
       :saved="configSaved"
       @save="onSaveConfig"
+      @select-model="config.selectModel"
+      @save-model="onSaveModel"
+      @delete-model="onDeleteModel"
       @update:mode="onSelectMode"
       @update:task-mode="onSelectTaskMode"
       @update:temperature="(v) => temperature = v"
@@ -33,10 +39,15 @@
     :token-stats="chat.tokenStats.value"
     :busy="chat.busy.value"
     :edit-ref="editRef"
+    :models="config.models.value"
+    :active-model-index="config.activeModelIndex.value"
     @send="onSend"
     @stop="onStop"
     @toggle-token="toggleTokenPanel"
     @cancel-edit="editRef = ''"
+    @select-model="config.selectModel"
+    @save-model="onSaveModel"
+    @delete-model="onDeleteModel"
   />
 </template>
 
@@ -104,6 +115,20 @@ function onSaveConfig(cfg: { apiKey: string; apiBase: string; model: string }) {
   setTimeout(() => configSaved.value = false, 2000)
 }
 
+function onSaveModel(index: number, profile: { name: string; apiKey: string; apiBase: string; model: string }) {
+  if (index === -1) {
+    // New model
+    config.addModel(profile)
+  } else {
+    // Edit existing
+    config.updateModel(index, profile)
+  }
+}
+
+function onDeleteModel(index: number) {
+  config.deleteModel(index)
+}
+
 function onSelectMode(m: 'plan' | 'code') {
   mode.setMode(m)
 }
@@ -115,6 +140,10 @@ function onSelectTaskMode(m: TaskMode) {
 function onExecutePlan(text: string) {
   chat.executePlan(text, paramsModel.value, temperature.value, topP.value, maxTokens.value)
   mode.setMode('code')
+}
+
+function onFeedback(messageId: number, rating: 'up' | 'down', comment?: string) {
+  chat.sendFeedback(messageId, rating, comment)
 }
 
 function toggleTokenPanel() {

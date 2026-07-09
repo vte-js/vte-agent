@@ -1,15 +1,13 @@
 <template>
   <div class="task-panel" v-if="tasks.length > 0">
-    <div class="task-head">
+    <div class="task-head" @click="expanded = !expanded">
       <div class="task-head-left">
         <svg class="task-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         <span class="task-label">任务清单</span>
       </div>
       <div class="task-head-right">
         <span class="task-counter">{{ doneCount }}/{{ totalCount }}</span>
-        <button class="task-toggle" @click="expanded = !expanded" :title="expanded ? '折叠' : '展开'">
-          <svg :class="{ rotated: !expanded }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
+        <svg class="task-toggle" :class="{ rotated: !expanded }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
     </div>
     <div class="task-progress-wrap" v-show="expanded">

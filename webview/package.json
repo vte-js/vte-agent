@@ -8,7 +8,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@types/prismjs": "^1.26.6",
     "mermaid": "^11.16.0",
+    "prismjs": "^1.30.0",
     "vue": "^3.4.0"
   },
   "devDependencies": {

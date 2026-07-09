@@ -2,9 +2,25 @@
   <div class="cfg">
     <div class="cfg-title">配置</div>
 
+    <!-- Model Profiles -->
+    <div class="cfg-section">
+      <div class="cfg-section-label">模型配置</div>
+      <ModelSelector
+        :models="models"
+        :active-index="activeModelIndex"
+        @select="$emit('selectModel', $event)"
+        @save="(i, p) => $emit('saveModel', i, p)"
+        @delete="$emit('deleteModel', $event)"
+      />
+    </div>
+
     <!-- API Settings -->
     <div class="cfg-section">
-      <div class="cfg-section-label">API 连接</div>
+      <div class="cfg-section-label">当前模型设置</div>
+      <div class="fld">
+        <label class="fld-lbl">名称</label>
+        <input class="c-input" v-model="profileName" placeholder="My GPT-4"/>
+      </div>
       <div class="fld">
         <label class="fld-lbl">API 密钥</label>
         <div class="c-input-wrap">
@@ -22,7 +38,7 @@
         <input class="c-input" v-model="apiBase" placeholder="https://api.openai.com/v1"/>
       </div>
       <div class="fld">
-        <label class="fld-lbl">默认模型</label>
+        <label class="fld-lbl">模型</label>
         <input class="c-input" v-model="modelName" placeholder="gpt-4"/>
       </div>
     </div>
@@ -113,9 +129,13 @@
 import { ref, watch } from 'vue'
 import type { AgentMode } from '../composables/useMode'
 import type { TaskMode } from '../protocol'
+import type { ModelProfile } from '../composables/useConfig'
 import VTooltip from './VTooltip.vue'
+import ModelSelector from './ModelSelector.vue'
 
 const props = defineProps<{
+  models: ModelProfile[]
+  activeModelIndex: number
   initialApiKey: string
   initialApiBase: string
   initialModel: string
@@ -129,6 +149,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   save: [config: { apiKey: string; apiBase: string; model: string }]
+  selectModel: [index: number]
+  saveModel: [index: number, profile: { name: string; apiKey: string; apiBase: string; model: string }]
+  deleteModel: [index: number]
   'update:mode': [mode: AgentMode]
   'update:taskMode': [taskMode: TaskMode]
   'update:temperature': [value: number]
@@ -136,16 +159,33 @@ const emit = defineEmits<{
   'update:maxTokens': [value: number]
 }>()
 
+const profileName = ref('')
 const apiKey = ref(props.initialApiKey)
 const apiBase = ref(props.initialApiBase)
 const modelName = ref(props.initialModel)
 const showKey = ref(false)
+
+watch(() => props.activeModelIndex, () => {
+  const m = props.models[props.activeModelIndex]
+  if (m) {
+    profileName.value = m.name
+    apiKey.value = m.apiKey
+    apiBase.value = m.apiBase
+    modelName.value = m.model
+  }
+}, { immediate: true })
 
 watch(() => props.initialApiKey, (v) => apiKey.value = v)
 watch(() => props.initialApiBase, (v) => apiBase.value = v)
 watch(() => props.initialModel, (v) => modelName.value = v)
 
 function onSave() {
+  emit('updateProfile', {
+    name: profileName.value || 'Unnamed',
+    apiKey: apiKey.value,
+    apiBase: apiBase.value,
+    model: modelName.value,
+  })
   emit('save', { apiKey: apiKey.value, apiBase: apiBase.value, model: modelName.value })
 }
 </script>

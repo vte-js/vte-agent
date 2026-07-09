@@ -99,6 +99,7 @@ export interface ContextManager {
   summarizeFile(path: string, maxTokens?: number): Promise<SummarizedContent>;
   getSnapshot(): ContextSnapshot;
   reset(): void;
+  markModified(filePath: string): void;
 }
 
 // API types
@@ -144,4 +145,34 @@ export interface LLMResponse {
     completion_tokens: number;
     total_tokens: number;
   };
+}
+
+// Checkpoint types
+export interface Checkpoint {
+  id: string;
+  name: string;
+  timestamp: number;
+  messages: AgentMessage[];
+  chatHistory: Array<{
+    id: number;
+    role: 'user' | 'assistant' | 'error';
+    text: string;
+    timestamp: string;
+    thinkingText?: string;
+  }>;
+  modifiedFiles: Record<string, string>;
+  tasks: Array<{
+    id: number;
+    title: string;
+    status: 'pending' | 'in_progress' | 'done' | 'blocked';
+    subtasks?: number[];
+  }>;
+  mode: 'plan' | 'code';
+  taskMode: 'off' | 'llm-auto' | 'plugin-auto';
+  tokenStats: {
+    prompt: number;
+    completion: number;
+  };
+  gitCommit?: string;
+  gitTag?: string;
 }

@@ -212,5 +212,20 @@ export function useChat(mode: () => string) {
     sendChat(execMsg, model, temperature, topP, maxTokens)
   }
 
-  return { messages, busy, tokenStats, showTokenStats, sendChat, clear, stop, executePlan, deleteMessage, resendMessage }
+  function sendFeedback(messageId: number, rating: 'up' | 'down', comment?: string) {
+    const msg = messages.value.find(m => m.id === messageId && m.type === 'chat') as ChatMessage | undefined
+    if (!msg) return
+    // Find the user message that preceded this assistant message
+    let userText = ''
+    for (let i = messages.value.indexOf(msg) - 1; i >= 0; i--) {
+      const m = messages.value[i]
+      if (m.type === 'chat' && (m as ChatMessage).role === 'user') {
+        userText = (m as ChatMessage).text
+        break
+      }
+    }
+    send({ type: 'feedback', messageId, rating, comment, userMessage: userText, assistantMessage: msg.text.slice(0, 500) })
+  }
+
+  return { messages, busy, tokenStats, showTokenStats, sendChat, clear, stop, executePlan, deleteMessage, resendMessage, sendFeedback }
 }

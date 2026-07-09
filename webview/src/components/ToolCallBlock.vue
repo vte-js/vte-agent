@@ -4,18 +4,31 @@
       <div class="tool-row">
         <span v-if="toolCalls[0].status === 'running'" class="tool-spinner"></span>
         <span v-else class="tool-done">✓</span>
-        <AgentAvatar class="tool-icon" />
+        <AgentAvatar class="tool-icon" compact />
         <span class="tool-name">{{ getToolLabel(toolCalls[0].name) }}</span>
         <span v-if="toolCalls[0].status === 'done' && toolCalls[0].elapsed" class="tool-time">{{ formatTime(toolCalls[0].elapsed) }}</span>
       </div>
+      <!-- Show diff for edit/write operations -->
+      <DiffViewer v-if="shouldShowDiff(toolCalls[0])" :content="toolCalls[0].result || ''" />
     </div>
 
     <div v-else class="tool-group">
       <div class="tool-group-header">
         <span v-if="!allDone" class="tool-spinner"></span>
         <span v-else class="tool-done">✓</span>
-        <AgentAvatar class="tool-icon" />
+        <AgentAvatar class="tool-icon" compact />
         <span class="tool-group-count">调用了 {{ toolCalls.length }} 个工具</span>
+      </div>
+      <!-- Show diffs for each tool call in group -->
+      <div v-for="tc in toolCalls" :key="tc.id" class="tool-group-item">
+        <div class="tool-group-step">
+          <span v-if="tc.status === 'done'" class="tool-done-sm">✓</span>
+          <span v-else-if="tc.status === 'error'" class="tool-error-sm">✗</span>
+          <span v-else class="tool-spinner-sm"></span>
+          <span class="tool-step-name">{{ getToolLabel(tc.name) }}</span>
+          <span v-if="tc.elapsed" class="tool-time">{{ formatTime(tc.elapsed) }}</span>
+        </div>
+        <DiffViewer v-if="shouldShowDiff(tc)" :content="tc.result || ''" />
       </div>
     </div>
   </div>
@@ -25,6 +38,7 @@
 import { computed } from 'vue'
 import type { ToolCallEvent } from '../composables/useChat'
 import AgentAvatar from './AgentAvatar.vue'
+import DiffViewer from './DiffViewer.vue'
 
 const props = defineProps<{
   toolCalls: ToolCallEvent[]
@@ -57,5 +71,15 @@ function getToolLabel(name: string): string {
 function formatTime(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
+}
+
+function shouldShowDiff(tc: ToolCallEvent): boolean {
+  if (tc.status !== 'done' || !tc.result) return false
+  // Show diff for edit/write/bash tools that might contain diff output
+  if (['edit', 'write'].includes(tc.name)) return true
+  // Show diff for git diff commands
+  if (tc.name === 'git' && tc.arguments?.command?.includes('diff')) return true
+  // Check if result looks like a diff
+  return tc.result.includes('@@') || tc.result.startsWith('diff --git')
 }
 </script>

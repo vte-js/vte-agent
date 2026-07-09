@@ -1,90 +1,112 @@
 # VTE Agent 项目进度
 
-> 最后更新: 2026-07-08
+> 最后更新: 2026-07-09
 
 ## 项目概述
 VS Code AI 编码助手插件，Vue 3 + Vite webview UI。品牌名 `VTE Agent`，仓库 `vte-js/vte-agent`。
 
 ## 本次会话完成的工作
 
-### 1. 重命名 vte-code → vte-agent ✅
-所有 ID、标题、日志、组件文本统一更新。
+### 1. 侧边栏图标优化 ✅
+- 重新设计狐狸图标，从 welcome page 等比缩放到 24x24
+- 添加圆形边框 + clipPath 裁剪
+- 响应式适配窗口大小
 
-### 2. 状态栏入口 + WebviewPanel 弹出层 ✅
-- 状态栏按钮 `$(comment-discussion) VTE Agent`
-- 命令 `vte-agent.openChat` 打开/聚焦 WebviewPanel
-- 保留 Activity Bar 侧边栏作为第二入口
-- 两者共享同一个 ChatViewProvider 和 AgentEngine
+### 2. 多模型管理 ✅
+- ModelSelector 组件：快速切换模型
+- 中间弹窗管理模型配置（添加/编辑/删除）
+- 输入框左下角也显示模型选择器
+- 支持多个 provider/model 配置持久化
 
-### 3. 聊天历史跨 Webview 同步 ✅
-- Provider 端维护 `chatHistory` 数组
-- 新 Webview 打开时通过 `chatHistory` 消息同步完整历史
-- 当前模式通过 `modeChanged` 消息同步
+### 3. 消息反馈系统 ✅
+- 点赞/点踩按钮
+- 点踩时弹出反馈弹窗（快捷标签 + 自定义输入）
+- 反馈存储到 `.vte/feedback.json`
+- 反馈注入到 LLM system prompt 作为校准
 
-### 4. 消息结构重构 — per-message 状态 ✅
-- ChatMessage 新增 `thinkingPhase`、`thinkingText`、`toolCalls`
-- 去除所有全局状态 ref（thinking、thinkingContent、reasoning 等）
-- 每条消息自带完整状态，支持历史会话查看
+### 4. 消息拦截中间件 ✅
+- 结构化 system prompt（XML 标签）
+- 模板引擎：`{{AGENT_ROLE}}` `{{TOOL_USE}}` `{{RULES}}`
+- 环境信息注入（cwd/os/shell）
+- 响应包装：`<system-reminder>` 元数据
+- 错误消息清理：提取 JSON message，移除 system-reminder
 
-### 5. 思考过程实时显示 ✅
-- `thinking` 事件时立即创建 streaming 消息（thinkingPhase=true）
-- thinking_chunk 直接写入消息的 thinkingText
-- 内容开始时 thinkingPhase=false，动画消失，思考内容永久保留
-- 动画和思考内容在 MessageBubble 内部，位于图标名称下方
+### 5. 规则文件系统 ✅
+- `.vte/rules/*.md` 项目规则
+- `.vte/rules/local/*.md` 个人规则
+- `~/.vte/rules/*.md` 全局规则
+- 内置默认规则：`src/agent/default-rules.md`
+- 规则自动注入到 system prompt
 
-### 6. 工具调用展示 ✅
-- Engine 发送 tool_call/tool_result 事件
-- ToolCallBlock 组件：工具名 + 状态图标 + 耗时
-- 多工具自动折叠显示"调用了 N 个工具"
+### 6. Token 优化 ✅
+- 消息历史截断（保留最近 20 条）
+- 工具结果压缩（超过 2000 字符截断）
+- Token 预算追踪
 
-### 7. Token 用量追踪修复 ✅
-- 添加 `stream_options: { include_usage: true }` 到 API 请求
-- recordUsage 调用缺失修复
+### 7. 代码差异渲染 ✅
+- DiffViewer 组件：解析 unified diff 格式
+- Prism.js 语法高亮
+- 绿色/红色背景高亮
+- 工具调用后自动显示 diff
+- 响应式布局
 
-### 8. 狐狸头像设计 ✅
-- AgentAvatar.vue 双模式组件（full/compact）
-- **完整版**：拟人化狐狸，渐变背景圆 + clipPath 裁剪，耳朵摇摆/眨眼/瞳孔微动/鼻子抽动/胡须摆动动画
-- **紧凑版**：单色狐狸剪影，用于 header 和消息气泡
-- Activity Bar 图标：简化狐狸轮廓 SVG
+### 8. 思考内容折叠 ✅
+- 思考内容默认隐藏
+- 点击展开/折叠
+- 消息卡片更简洁
 
-### 9. 消息流 UI 优化 ✅
-- 思考动画与内容丝滑过渡（同一容器内状态切换）
-- 空消息气泡在 thinkingPhase 时隐藏（v-if 控制）
-- 欢迎页重做：大头像 + 标题 + 示例提示词卡片
+### 9. Checkpoint + Shadow Git ✅
+- Shadow Git 管理器：`.vte/checkpoints/{workspaceHash}/.git`
+- LLM 工具：checkpoint_save/restore/diff/log
+- 对话/任务状态存储到 `.vte-metadata.json`
+- 工具调用后自动 git commit
+
+### 10. UI/UX 优化 ✅
+- 输入框去掉上边框
+- 任务清单整行可点击
+- 错误消息红色样式
+- 消息内容 word-break 防溢出
+- 灰盒测试显示代码差异
 
 ## 关键文件状态
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `package.json` | 已修改 | vte-agent 命名 + command 注册 |
-| `src/vscode/extension.ts` | 已修改 | 状态栏 + 命令注册 |
-| `src/vscode/panel.ts` | 已修改 | WebviewPanel + chatHistory 同步 |
-| `src/agent/engine.ts` | 已修改 | tool_call/tool_result 事件 + usage |
-| `webview/src/protocol.ts` | 已修改 | tool_call/tool_result 消息类型 |
-| `webview/src/composables/useChat.ts` | 已重构 | per-message 状态，去除全局 ref |
-| `webview/src/composables/useMode.ts` | 已修改 | modeChanged 同步 |
-| `webview/src/components/AgentAvatar.vue` | 新增 | 双模式狐狸头像 |
-| `webview/src/components/ToolCallBlock.vue` | 新增 | 工具调用展示 |
-| `webview/src/components/MessageBubble.vue` | 已修改 | 思考块内置 + 工具调用 |
-| `webview/src/components/MessageList.vue` | 已修改 | 简化，状态从消息读取 |
-| `webview/src/theme.css` | 已修改 | 工具块样式 + 头像样式 |
-| `resources/icon.svg` | 已修改 | 狐狸轮廓图标 |
+| `src/agent/shadow-git.ts` | 新增 | Shadow Git 管理器 |
+| `src/agent/checkpoint-tools.ts` | 新增 | Checkpoint LLM 工具 |
+| `src/agent/middleware.ts` | 新增 | 消息拦截中间件 |
+| `src/agent/prompt-template.ts` | 新增 | 结构化 prompt 模板 |
+| `src/agent/rules.ts` | 新增 | 规则文件引擎 |
+| `src/agent/default-rules.md` | 新增 | 内置默认规则 |
+| `src/agent/mock-engine.ts` | 已修改 | 添加 diff 测试场景 |
+| `src/vscode/panel.ts` | 已修改 | 多模型/checkpoint/错误处理 |
+| `src/shared/types.ts` | 已修改 | Checkpoint 接口 |
+| `webview/src/components/ModelSelector.vue` | 新增 | 模型选择器 |
+| `webview/src/components/FeedbackModal.vue` | 新增 | 反馈弹窗 |
+| `webview/src/components/DiffViewer.vue` | 新增 | 代码差异渲染 |
+| `webview/src/components/CheckpointBar.vue` | 新增 | Checkpoint 管理 |
+| `webview/src/components/AgentAvatar.vue` | 已修改 | 圆形边框 + clipPath |
+| `webview/src/components/ToolCallBlock.vue` | 已修改 | 显示 diff |
+| `webview/src/components/MessageBubble.vue` | 已修改 | 反馈/错误/思考折叠 |
+| `webview/src/composables/useConfig.ts` | 已修改 | 多模型支持 |
+| `webview/src/theme.css` | 已修改 | 全新样式 |
 
 ## 构建命令
 ```bash
-npm run compile && cd webview && npx vite build
+npm run compile && npm run copy:assets && cd webview && npx vite build
 ```
 
 ## 测试方法
 1. F5 启动 Extension Development Host
-2. 状态栏点击 → 弹出 WebviewPanel
-3. Activity Bar → 侧边栏
-4. 发送消息 → 观察思考过程实时显示
-5. 触发工具调用 → 观察状态变化
-6. 多轮对话 → 验证每轮独立状态
+2. 输入 "你是谁" → 验证身份回复
+3. 让 LLM 编辑文件 → 验证 diff 显示
+4. 点击点赞/点踩 → 验证反馈弹窗
+5. 点击模型选择器 → 验证多模型切换
+6. 点击 checkpoint 按钮 → 验证保存/恢复
+7. 模拟 API 错误 → 验证错误样式
 
 ## 待办事项
-- [ ] 历史会话记录持久化
-- [ ] 消息编辑功能端到端测试
-- [ ] Mermaid 图表功能验证
+- [ ] Shadow Git metadata 完整测试
+- [ ] 反馈系统端到端测试
+- [ ] 规则文件热加载
 - [ ] 图片粘贴功能

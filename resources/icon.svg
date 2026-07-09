@@ -1,3 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-  <path d="M4 2L10 11L6 12ZM20 2L14 11L18 12ZM6 12Q6 18 10 20.5L12 22L14 20.5Q18 18 18 12L14 11Q12 14 10 11Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+  <defs>
+    <!-- Clip fox to inner circle -->
+    <clipPath id="circleClip">
+      <circle cx="12" cy="12" r="9"/>
+    </clipPath>
+    <!-- Cut out eyes and nose -->
+    <mask id="m">
+      <rect width="24" height="24" fill="white"/>
+      <ellipse cx="9" cy="11.5" rx="2" ry="1.5" fill="black" transform="rotate(-8 9 11.5)"/>
+      <ellipse cx="15" cy="11.5" rx="2" ry="1.5" fill="black" transform="rotate(8 15 11.5)"/>
+      <ellipse cx="12" cy="14.5" rx="1" ry="0.8" fill="black"/>
+    </mask>
+  </defs>
+  <!-- Circle ring border (not clipped) -->
+  <path fill-rule="evenodd" d="M12 1a11 11 0 1 0 0 22 11 11 0 0 0 0-22Zm0 2a9 9 0 1 1 0 18 9 9 0 0 1 0-18Z"/>
+  <!-- Fox clipped inside circle -->
+  <g clip-path="url(#circleClip)" mask="url(#m)">
+    <path d="M5 2.5L9 9L4 9.5Z"/>
+    <path d="M19 2.5L15 9L20 9.5Z"/>
+    <path d="M4 9.5Q4 14 7.5 16L12 18.5L16.5 16Q20 14 20 9.5L15 9Q12 11 9 9Z"/>
+  </g>
 </svg>

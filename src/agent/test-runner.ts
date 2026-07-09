@@ -12,6 +12,8 @@ export interface TestResult {
     tool: string
     passed: boolean
     error?: string
+    args?: Record<string, any>
+    result?: string
   }>
   response: string
   duration: number
@@ -35,6 +37,8 @@ export async function runGrayBoxTests(context: ContextManager): Promise<TestResu
       tool: sr.step.tool,
       passed: sr.result.type !== 'error',
       error: sr.result.type === 'error' ? sr.result.content : undefined,
+      args: sr.step.args,
+      result: sr.result.type === 'text' ? sr.result.content : undefined,
     }));
 
     const passed = steps.every(s => s.passed);

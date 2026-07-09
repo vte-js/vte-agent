@@ -19,6 +19,14 @@
         @input="autoResize"
       ></textarea>
       <div class="inp-bar">
+        <ModelSelector
+          :models="models"
+          :active-index="activeModelIndex"
+          @select="$emit('selectModel', $event)"
+          @save="(i, p) => $emit('saveModel', i, p)"
+          @delete="$emit('deleteModel', $event)"
+        />
+        <CheckpointBar />
         <div style="flex:1"></div>
         <TokenRing :cost="tokenStats.totalCost" @toggle="$emit('toggleToken')" />
         <VTooltip v-if="!busy" text="发送消息">
@@ -39,13 +47,18 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import type { TokenStatsData } from './TokenStats'
+import type { ModelProfile } from '../composables/useConfig'
 import TokenRing from './TokenRing.vue'
 import VTooltip from './VTooltip.vue'
+import ModelSelector from './ModelSelector.vue'
+import CheckpointBar from './CheckpointBar.vue'
 
 const props = defineProps<{
   tokenStats: TokenStatsData
   busy: boolean
   editRef: string
+  models: ModelProfile[]
+  activeModelIndex: number
 }>()
 
 const emit = defineEmits<{
@@ -53,6 +66,9 @@ const emit = defineEmits<{
   stop: []
   toggleToken: []
   cancelEdit: []
+  selectModel: [index: number]
+  saveModel: [index: number, profile: ModelProfile]
+  deleteModel: [index: number]
 }>()
 
 const text = ref('')

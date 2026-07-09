@@ -18,6 +18,7 @@
         @execute-plan="(text) => $emit('executePlan', text)"
         @delete="$emit('deleteMessage', (msg as ChatMessage).id)"
         @edit="(text) => $emit('startEdit', text)"
+        @feedback="(rating, comment) => $emit('feedback', (msg as ChatMessage).id, rating, comment)"
       />
     </template>
   </div>
@@ -40,6 +41,7 @@ defineEmits<{
   executePlan: [text: string]
   deleteMessage: [id: number]
   startEdit: [text: string]
+  feedback: [messageId: number, rating: 'up' | 'down', comment?: string]
 }>()
 
 const listEl = ref<HTMLElement>()

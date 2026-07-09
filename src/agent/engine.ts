@@ -3,8 +3,19 @@
  * Key principle: incremental context, no token waste
  */
 
-import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult } from '../shared/types';
+import * as path from 'path';
+import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint } from '../shared/types';
 import { formatIndexForLLM } from '../context/protocol';
+import {
+  createTokenBudget,
+  trackTokens,
+  TokenBudget,
+} from './middleware';
+import {
+  buildPromptFromTemplate,
+  wrapResponse,
+  buildEnvironmentContext,
+} from './prompt-template';
 import { allTools } from './tools';
 import { bashTool } from './bash';
 import { grepTool } from './grep';
@@ -13,6 +24,8 @@ import { diagnosticsTool } from './diagnostics';
 import { gitTool } from './git';
 import { webfetchTool } from './webfetch';
 import { taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool } from './task-tools';
+import { checkpointSaveTool, checkpointListTool, checkpointRestoreTool, checkpointDeleteTool, checkpointDiffTool, checkpointLogTool, setCheckpointContext } from './checkpoint-tools';
+import { ShadowGit } from './shadow-git';
 import { registerTools, getAllTools } from './registry';
 import { TaskMode, analyzeComplexity, checkLLMLaziness, getComplexityInstruction } from './complexity';
 import { recordUsage, getSessionStats, getRecentRecords } from './token-tracker';
@@ -20,48 +33,7 @@ import { recordUsage, getSessionStats, getRecentRecords } from './token-tracker'
 export type AgentMode = 'plan' | 'code';
 
 // Register all tools
-registerTools([...allTools, bashTool, grepTool, globTool, diagnosticsTool, gitTool, webfetchTool, taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool]);
-
-const PLAN_PROMPT = `You are a senior software architect in PLAN mode. Your job is to analyze code and produce clear, actionable implementation plans.
-
-CAPABILITIES: You can read and search files. You CANNOT modify, write, or execute anything.
-
-RULES:
-- Analyze the codebase thoroughly before planning.
-- Break down tasks into clear, ordered steps.
-- For each step: specify the file, what to change, and why.
-- Consider edge cases, dependencies, and testing.
-- Output a structured plan with numbered steps.
-- Be concise and specific. No vague suggestions.`;
-
-const CODE_PROMPT = `You are an expert AI coding assistant in CODE mode. You can read, search, edit, and write files, and execute shell commands.
-
-TOOLS AVAILABLE:
-- read: Read file content (with optional line range)
-- search: Search file contents with regex
-- edit: Replace exact string in file
-- write: Create or overwrite file
-- list: List directory contents
-- grep: Fast content search (ripgrep)
-- bash: Execute shell commands
-- glob: Find files by pattern (e.g. "**/*.ts")
-- diagnostics: Check LSP errors/warnings for a file
-- git: Git operations (status, diff, log, blame, branch, show)
-- webfetch: Fetch URL content for documentation
-- task_create: Create a task to track progress
-- task_update: Update task status (pending/in_progress/done/blocked)
-- task_list: View all tasks and progress
-- task_delete: Remove a task
-
-RULES:
-- Use tools to access file content. Never assume file contents.
-- Always read a file before editing it.
-- For large files, read specific line ranges, not the whole file.
-- Make minimal, targeted changes. Don't refactor unrelated code.
-- After editing, verify the change was applied correctly.
-- Use diagnostics after editing to check for errors.
-- Break complex work into tasks using task_create, then update status as you work.
-- Be concise. No explanatory text unless asked.`;
+registerTools([...allTools, bashTool, grepTool, globTool, diagnosticsTool, gitTool, webfetchTool, taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool, checkpointSaveTool, checkpointListTool, checkpointRestoreTool, checkpointDeleteTool, checkpointDiffTool, checkpointLogTool]);
 
 const READ_ONLY_TOOL_NAMES = ['read', 'search', 'list', 'grep', 'glob', 'diagnostics', 'git'];
 
@@ -74,18 +46,79 @@ export class AgentEngine {
   private mode: AgentMode = 'code';
   private taskMode: TaskMode = 'off';
   private abortController: AbortController | null = null;
+  private feedback: Array<{ userMessage: string; assistantMessage: string; rating: 'up' | 'down'; comment?: string; timestamp: string }> = [];
+  private tokenBudget: TokenBudget;
+  private workspaceRoot: string;
+  private shadowGit: ShadowGit;
+  // Context management: keep only recent messages, summarize old ones
+  private readonly MAX_HISTORY_MESSAGES = 20;
+  private readonly MAX_TOOL_RESULT_CHARS = 2000;
   onViewUpdate?: (update: Record<string, unknown>) => void;
 
   constructor(
     context: ContextManager,
     model: string = 'gpt-4',
     apiKey: string = '',
-    apiBase: string = 'https://api.openai.com/v1'
+    apiBase: string = 'https://api.openai.com/v1',
+    workspaceRoot: string = ''
   ) {
     this.context = context;
     this.model = model;
     this.apiKey = apiKey;
     this.apiBase = apiBase;
+    this.workspaceRoot = workspaceRoot;
+    this.tokenBudget = createTokenBudget();
+    this.shadowGit = new ShadowGit(workspaceRoot);
+    this.shadowGit.init();
+    // Set checkpoint context for checkpoint tools
+    setCheckpointContext(this, workspaceRoot);
+  }
+
+  setFeedback(feedback: Array<{ userMessage: string; assistantMessage: string; rating: 'up' | 'down'; comment?: string; timestamp: string }>) {
+    this.feedback = feedback;
+  }
+
+  // ── Context Management (token-efficient, inspired by OpenCode) ──
+
+  /**
+   * Trim message history to stay within token budget.
+   * Keeps: first user message (context) + last N messages + all tool calls in current turn.
+   */
+  private trimHistory(): void {
+    if (this.messages.length <= this.MAX_HISTORY_MESSAGES) return;
+
+    // Keep first message (initial context) + recent messages
+    const first = this.messages[0];
+    const recent = this.messages.slice(-this.MAX_HISTORY_MESSAGES);
+
+    // Add summary of trimmed messages
+    const trimmedCount = this.messages.length - this.MAX_HISTORY_MESSAGES;
+    const snapshot = this.context.getSnapshot();
+    const filesRead = Array.from(snapshot.readFiles).slice(-5).join(', ') || 'none';
+    const summary: AgentMessage = {
+      role: 'system',
+      content: `[Context: ${trimmedCount} earlier messages trimmed to save tokens. Key files read: ${filesRead}]`,
+    };
+
+    this.messages = [first, summary, ...recent];
+    console.log(`[VTE] Trimmed history: ${trimmedCount} messages removed`);
+  }
+
+  /**
+   * Compress tool results that are too large.
+   */
+  private compressToolResults(results: ToolResult[]): ToolResult[] {
+    return results.map(r => {
+      if (r.content.length > this.MAX_TOOL_RESULT_CHARS) {
+        const truncated = r.content.slice(0, this.MAX_TOOL_RESULT_CHARS);
+        const omitted = r.content.length - this.MAX_TOOL_RESULT_CHARS;
+        return {
+          ...r,
+          content: `${truncated}\n\n[... ${omitted} chars omitted to save tokens]`,
+        };
+      }
+      return r;
+    });
   }
 
   private get tools(): ToolDefinition[] {
@@ -95,8 +128,23 @@ export class AgentEngine {
     return getAllTools();
   }
 
-  private get systemPrompt(): string {
-    return this.mode === 'plan' ? PLAN_PROMPT : CODE_PROMPT;
+  /**
+   * Build system prompt using template engine.
+   * This replaces the old hardcoded prompts with a structured template.
+   */
+  private buildSystemPromptWithTemplate(customInstructions?: string): string {
+    const snapshot = this.context.getSnapshot();
+    const projectCtx = snapshot.projectIndex
+      ? `\n<project-info>\nProject: ${snapshot.projectIndex.packageInfo?.name || 'unknown'}\nFiles read this session: ${snapshot.readFiles.size}\n</project-info>`
+      : '';
+
+    const envCtx = buildEnvironmentContext(this.workspaceRoot || process.cwd());
+
+    return buildPromptFromTemplate(this.mode, {
+      cwd: this.workspaceRoot,
+      customInstructions,
+      projectContext: `${envCtx}\n${projectCtx}`,
+    });
   }
 
   async initialize(): Promise<string> {
@@ -138,18 +186,25 @@ export class AgentEngine {
 
     this.messages.push({ role: 'user', content: userMessage });
 
-    const snapshot = this.context.getSnapshot();
-    const projectCtx = snapshot.projectIndex
-      ? `\nProject: ${snapshot.projectIndex.packageInfo?.name || 'unknown'}\nFiles read this session: ${snapshot.readFiles.size}`
-      : '';
-    const modeLabel = this.mode === 'plan' ? '[PLAN MODE - read only]' : '[CODE MODE - full access]';
-    const systemContent = `${this.systemPrompt}\n${projectCtx}\n${modeLabel}${complexityInstruction}`;
+    // Build system prompt using template engine
+    const customInstructions = [
+      complexityInstruction,
+      this.feedback.length > 0 ? `User feedback available: ${this.feedback.length} entries` : '',
+    ].filter(Boolean).join('\n')
 
+    const systemContent = this.buildSystemPromptWithTemplate(customInstructions || undefined);
+
+    // Trim history to save tokens (keep recent messages, summarize old ones)
+    this.trimHistory();
+
+    const startTime = Date.now();
     const response = await this.callLLM(systemContent, temperature, topP, maxTokens);
+    const latencyMs = Date.now() - startTime;
 
     // Record token usage
     if (response.usage) {
       recordUsage(this.model, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0);
+      trackTokens(this.tokenBudget, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0);
     }
 
     const assistantMessage = response.choices[0]?.message;
@@ -170,9 +225,11 @@ export class AgentEngine {
       });
 
       const toolResults = await this.executeToolCalls(assistantMessage.tool_calls);
+      // Compress large tool results to save tokens
+      const compressedResults = this.compressToolResults(toolResults);
       this.messages.push({
         role: 'tool',
-        content: toolResults.map(r => r.content).join('\n\n'),
+        content: compressedResults.map(r => r.content).join('\n\n'),
       });
 
       // LLM-auto mode: enforce task tools if LLM skipped them on complex tasks
@@ -202,7 +259,21 @@ export class AgentEngine {
     }
 
     this.messages.push({ role: 'assistant', content: assistantMessage.content || '' });
-    return assistantMessage.content || '';
+
+    // Wrap response with system-reminder metadata
+    const rawContent = assistantMessage.content || '';
+    const wrappedContent = wrapResponse(rawContent, {
+      model: this.model,
+      tokens: response.usage ? {
+        prompt: response.usage.prompt_tokens || 0,
+        completion: response.usage.completion_tokens || 0,
+      } : undefined,
+      latencyMs,
+    });
+
+    console.log(`[VTE] Response ready: tokens=${response.usage?.prompt_tokens || 0}+${response.usage?.completion_tokens || 0} latency=${latencyMs}ms`);
+
+    return wrappedContent;
   }
 
   private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {
@@ -372,11 +443,36 @@ export class AgentEngine {
 
       this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
       const startTime = Date.now();
-      const result = await tool.execute(args, this.context);
-      const elapsed = Date.now() - startTime;
-      console.log(`[VTE] Tool: ${tc.function.name} (${elapsed}ms)`);
-      this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: result.content.substring(0, 500), elapsed });
-      results.push(result);
+
+      try {
+        const result = await tool.execute(args, this.context);
+        const elapsed = Date.now() - startTime;
+        console.log(`[VTE] Tool: ${tc.function.name} (${elapsed}ms)`);
+
+        // Auto-track file changes and get diff for edit/write tools
+        let diffInfo = '';
+        if (['edit', 'write'].includes(tc.function.name) && args.path) {
+          const fullPath = path.isAbsolute(args.path) ? args.path : path.join(this.workspaceRoot, args.path);
+          const commitHash = this.shadowGit.trackFile(fullPath, `Tool: ${tc.function.name} ${args.path}`);
+          if (commitHash) {
+            // Get the diff for this commit
+            const diffs = this.shadowGit.diff(commitHash + '~1', commitHash);
+            if (diffs.length > 0) {
+              diffInfo = '\n\n--- Code Diff ---\n' + diffs.map(d => d.patch).join('\n');
+            }
+          }
+        }
+
+        const displayResult = result.content.substring(0, 500) + diffInfo;
+        this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: displayResult, elapsed });
+        results.push(result);
+      } catch (err: any) {
+        const elapsed = Date.now() - startTime;
+        const errorMsg = `Tool error (${tc.function.name}): ${err.message || 'Unknown error'}`;
+        console.log(`[VTE] Tool error: ${tc.function.name} - ${err.message}`);
+        this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: errorMsg, elapsed: -elapsed });
+        results.push({ type: 'error', content: errorMsg });
+      }
     }
 
     return results;
@@ -408,5 +504,68 @@ export class AgentEngine {
 
   getTaskMode(): TaskMode {
     return this.taskMode;
+  }
+
+  // ── Checkpoint Methods ──
+
+  /**
+   * Create a checkpoint of current state (shadow-git only).
+   */
+  createCheckpoint(name?: string): { commitHash: string; tagName: string } | null {
+    // Save metadata to shadow-git before creating checkpoint
+    this.shadowGit.saveMetadata({
+      messages: this.messages,
+      mode: this.mode,
+      taskMode: this.taskMode,
+      tokenStats: {
+        prompt: this.tokenBudget.used.prompt,
+        completion: this.tokenBudget.used.completion,
+      },
+    });
+
+    // Create shadow git checkpoint
+    const tagName = this.shadowGit.createCheckpoint(name || `Checkpoint ${new Date().toLocaleTimeString()}`);
+    if (!tagName) return null;
+
+    const hash = this.shadowGit.getCommitHash();
+    return { commitHash: hash, tagName };
+  }
+
+  /**
+   * Restore state from a checkpoint (shadow-git).
+   */
+  restoreCheckpoint(tagName: string): boolean {
+    // Restore files from shadow-git
+    const restoredFiles = this.shadowGit.restoreCheckpoint(tagName);
+    if (restoredFiles.length === 0) {
+      console.warn(`[VTE] No files restored from checkpoint: ${tagName}`);
+      return false;
+    }
+
+    // Mark files as modified in context
+    for (const file of restoredFiles) {
+      this.context.markModified(file);
+    }
+
+    // Load metadata from shadow-git
+    const metadata = this.shadowGit.loadMetadata(tagName);
+    if (metadata) {
+      this.messages = metadata.messages || [];
+      this.mode = (metadata.mode as AgentMode) || 'code';
+      this.taskMode = (metadata.taskMode as TaskMode) || 'off';
+      if (metadata.tokenStats) {
+        this.tokenBudget.used = metadata.tokenStats;
+      }
+    }
+
+    console.log(`[VTE] Checkpoint restored: ${tagName} (${restoredFiles.length} files)`);
+    return true;
+  }
+
+  /**
+   * Get the ShadowGit instance for diff operations
+   */
+  getShadowGit(): ShadowGit {
+    return this.shadowGit;
   }
 }

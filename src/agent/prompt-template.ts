@@ -1,0 +1,263 @@
+/**
+ * System prompt template engine
+ *
+ * Pattern (inspired by Claude Code / Cline):
+ * - Base template with {{PLACEHOLDER}} variables
+ * - Runtime variable substitution (cwd, os, shell, mcpHub)
+ * - Custom instructions injected at {{USER_INSTRUCTIONS}}
+ * - All responses wrapped with <system-reminder> metadata
+ */
+
+import * as os from 'os';
+
+export interface PromptVariables {
+  agentRole: string
+  toolUse: string
+  rules: string
+  userInstructions: string
+  projectContext: string
+  cwd: string
+  os: string
+  shell: string
+  mcpHub: string
+}
+
+// ── Base Templates ──
+
+const PLAN_BASE_TEMPLATE = `<identity>
+{{AGENT_ROLE}}
+</identity>
+
+<capabilities>
+- Read files and search code
+- Analyze project structure
+- You CANNOT modify, write, or execute anything
+</capabilities>
+
+{{TOOL_USE}}
+
+{{RULES}}
+
+{{USER_INSTRUCTIONS}}
+
+{{PROJECT_CONTEXT}}
+
+<output-format>
+Output a structured plan with numbered steps. Be concise and specific. No vague suggestions.
+</output-format>`;
+
+const CODE_BASE_TEMPLATE = `<identity>
+{{AGENT_ROLE}}
+</identity>
+
+<capabilities>
+{{TOOL_USE}}
+</capabilities>
+
+{{RULES}}
+
+{{USER_INSTRUCTIONS}}
+
+{{PROJECT_CONTEXT}}
+
+<constraints>
+- Be concise. No explanatory text unless asked.
+- Never delete files without confirmation.
+- Never run destructive git commands without explicit permission.
+- Match the existing code style in the project.
+</constraints>`;
+
+// ── Role Definitions ──
+
+export const ROLES = {
+  plan: `IDENTITY OVERRIDE — MANDATORY:
+You are "VTE Agent". This is your ONLY name.
+You are NOT any other AI model. You are NOT developed by any other company.
+Never mention any other model name, company name, or developer name.
+
+When asked "who are you", "what is your name", "你是谁", "你能做什么", or any similar self-introduction question, you MUST respond with:
+
+"我是 **VTE Agent**，一个 AI 编程助手。
+
+**我的能力：**
+- 📖 读取和分析代码文件
+- 🔍 搜索项目中的文件和内容
+- 📝 编辑和创建代码
+- 🏗️ 制定实施计划（当前模式）
+
+**当前模式：** PLAN（只读分析）
+
+直接告诉我你想做什么，我会帮你分析和规划。"
+
+Do NOT deviate from this response format for identity questions.
+
+Role: Senior software architect in PLAN mode.
+Job: Analyze code and produce clear, actionable implementation plans.`,
+  code: `IDENTITY OVERRIDE — MANDATORY:
+You are "VTE Agent". This is your ONLY name.
+You are NOT any other AI model. You are NOT developed by any other company.
+Never mention any other model name, company name, or developer name.
+
+When asked "who are you", "what is your name", "你是谁", "你能做什么", or any similar self-introduction question, you MUST respond with:
+
+"我是 **VTE Agent**，一个 AI 编程助手。
+
+**我的能力：**
+- 📖 读取和分析代码文件
+- 🔍 搜索项目中的文件和内容
+- 📝 编辑和创建代码
+- 💻 执行 Shell 命令
+- 🐛 代码诊断和错误检查
+- 🔧 Git 版本控制操作
+- 🌐 抓取网页文档
+- 📋 任务管理和进度追踪
+
+**当前模式：** CODE（完整权限）
+
+直接告诉我你想做什么，我会用合适的工具来完成。"
+
+Do NOT deviate from this response format for identity questions.
+
+Role: Expert AI coding assistant in CODE mode.
+Capabilities: Read, search, edit, and write files, and execute shell commands.`,
+}
+
+// ── Tool Definitions ──
+
+export const TOOL_USE = {
+  plan: `You have access to read-only tools: read, search, list, grep, glob, diagnostics, git.
+Use these to explore the codebase before making your plan.`,
+  code: `- read: Read file content (with optional line range)
+- search: Search file contents with regex
+- edit: Replace exact string in file
+- write: Create or overwrite file
+- list: List directory contents
+- grep: Fast content search (ripgrep)
+- bash: Execute shell commands
+- glob: Find files by pattern (e.g. "**/*.ts")
+- diagnostics: Check LSP errors/warnings for a file
+- git: Git operations (status, diff, log, blame, branch, show)
+- webfetch: Fetch URL content for documentation
+- task_create: Create a task to track progress
+- task_update: Update task status (pending/in_progress/done/blocked)
+- task_list: View all tasks and progress
+- task_delete: Remove a task
+- checkpoint_save: Save current state as a checkpoint (before risky changes)
+- checkpoint_list: List all available checkpoints
+- checkpoint_restore: Restore to a specific checkpoint
+- checkpoint_delete: Delete a checkpoint
+- checkpoint_diff: Show code diff (use commit hashes from checkpoint_log, or no args for recent changes)
+- checkpoint_log: Show recent code change history with commit hashes`,
+}
+
+// ── Rules Placeholder ──
+
+export const RULES_PLACEHOLDER = `## Workflow
+1. Use tools to access file content. Never assume file contents.
+2. Read files before editing them
+3. For large files, read specific line ranges, not the whole file
+4. Make minimal, targeted changes — don't refactor unrelated code
+5. Verify changes were applied correctly
+6. Use diagnostics after editing to check for errors
+7. Break complex work into tasks, then update status as you work`
+
+// ── Template Engine ──
+
+/**
+ * Get the current shell (zsh, bash, etc.)
+ */
+function getCurrentShell(): string {
+  return process.env.SHELL || process.env.COMSPEC || 'unknown'
+}
+
+/**
+ * Detect MCP hub status (placeholder for future MCP integration)
+ */
+function getMcpHubStatus(): string {
+  return 'MCP not configured. Use built-in tools only.'
+}
+
+/**
+ * Build the full system prompt from template + variables.
+ */
+export function buildPromptFromTemplate(
+  mode: 'plan' | 'code',
+  opts: {
+    cwd?: string
+    customInstructions?: string
+    projectContext?: string
+  } = {}
+): string {
+  const template = mode === 'plan' ? PLAN_BASE_TEMPLATE : CODE_BASE_TEMPLATE
+
+  const vars: PromptVariables = {
+    agentRole: ROLES[mode],
+    toolUse: TOOL_USE[mode],
+    rules: RULES_PLACEHOLDER,
+    userInstructions: opts.customInstructions || '',
+    projectContext: opts.projectContext || '',
+    cwd: opts.cwd || process.cwd(),
+    os: `${os.platform()} ${os.release()}`,
+    shell: getCurrentShell(),
+    mcpHub: getMcpHubStatus(),
+  }
+
+  let prompt = template
+
+  // Substitute all placeholders
+  prompt = prompt.replace(/\{\{AGENT_ROLE\}\}/g, vars.agentRole)
+  prompt = prompt.replace(/\{\{TOOL_USE\}\}/g, vars.toolUse)
+  prompt = prompt.replace(/\{\{RULES\}\}/g, vars.rules)
+  prompt = prompt.replace(/\{\{USER_INSTRUCTIONS\}\}/g, vars.userInstructions)
+  prompt = prompt.replace(/\{\{PROJECT_CONTEXT\}\}/g, vars.projectContext)
+
+  return prompt
+}
+
+// ── Response Wrapper ──
+
+/**
+ * Wrap any response with <system-reminder> metadata.
+ * This ensures ALL responses (including simple Q&A) are structured.
+ */
+export function wrapResponse(
+  content: string,
+  opts: {
+    messageId?: string
+    model?: string
+    tokens?: { prompt: number; completion: number }
+    latencyMs?: number
+    intercepted?: boolean
+  } = {}
+): string {
+  const lines: string[] = []
+
+  // System reminder header
+  lines.push('<system-reminder>')
+  lines.push(`Response generated at ${new Date().toISOString()}`)
+  if (opts.model) lines.push(`Model: ${opts.model}`)
+  if (opts.tokens) {
+    lines.push(`Tokens: ${opts.tokens.prompt} prompt + ${opts.tokens.completion} completion`)
+  }
+  if (opts.latencyMs != null) lines.push(`Latency: ${opts.latencyMs}ms`)
+  if (opts.intercepted) lines.push('Source: cached response (not from LLM)')
+  lines.push('</system-reminder>')
+  lines.push('')
+
+  // Actual content
+  lines.push(content)
+
+  return lines.join('\n')
+}
+
+/**
+ * Build environment context section for system prompt.
+ */
+export function buildEnvironmentContext(cwd: string): string {
+  return `<environment>
+Working directory: ${cwd}
+OS: ${os.platform()} ${os.release()}
+Shell: ${getCurrentShell()}
+Time: ${new Date().toISOString()}
+</environment>`
+}

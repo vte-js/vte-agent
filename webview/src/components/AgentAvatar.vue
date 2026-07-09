@@ -70,23 +70,34 @@
         </clipPath>
       </defs>
     </template>
-    <!-- Compact version: fox icon -->
+    <!-- Compact version: fox clipped in circle ring (matches icon.svg) -->
     <template v-else>
-      <circle cx="50" cy="50" r="36" fill="#1e1e2e" stroke="none"/>
-      <path d="M26 14L40 34L22 37Z" fill="#fff"/>
-      <path d="M74 14L60 34L78 37Z" fill="#fff"/>
-      <path d="M22 37Q22 52 34 60L50 68L66 60Q78 52 78 37L60 34Q50 40 40 34Z" fill="#fff"/>
-      <ellipse cx="40" cy="42" rx="3.5" ry="4" fill="#1e1e2e"/>
-      <ellipse cx="60" cy="42" rx="3.5" ry="4" fill="#1e1e2e"/>
-      <circle cx="38.5" cy="40.5" r="1.2" fill="#fff" opacity="0.8"/>
-      <circle cx="58.5" cy="40.5" r="1.2" fill="#fff" opacity="0.8"/>
-      <ellipse cx="50" cy="56" rx="2.5" ry="2" fill="#1e1e2e"/>
+      <defs>
+        <clipPath :id="'cc-'+uid">
+          <circle cx="50" cy="50" r="38"/>
+        </clipPath>
+        <mask :id="'cm-'+uid">
+          <rect width="100" height="100" fill="white"/>
+          <ellipse cx="38" cy="48" rx="6" ry="5" fill="black" transform="rotate(-8 38 48)"/>
+          <ellipse cx="62" cy="48" rx="6" ry="5" fill="black" transform="rotate(8 62 48)"/>
+          <ellipse cx="50" cy="60" rx="3" ry="2.5" fill="black"/>
+        </mask>
+      </defs>
+      <!-- Circle ring border -->
+      <path fill-rule="evenodd" d="M50 4a46 46 0 1 0 0 92 46 46 0 0 0 0-92Zm0 8a38 38 0 1 1 0 76 38 38 0 0 1 0-76Z" fill="currentColor"/>
+      <!-- Fox clipped inside circle -->
+      <g :clip-path="'url(#cc-'+uid+')'" :mask="'url(#cm-'+uid+')'" fill="currentColor">
+        <path d="M22 10L38 38L16 40Z"/>
+        <path d="M78 10L62 38L84 40Z"/>
+        <path d="M16 40Q16 58 32 66L50 76L68 66Q84 58 84 40L62 38Q50 46 38 38Z"/>
+      </g>
     </template>
   </svg>
 </template>
 
 <script setup lang="ts">
 defineProps<{ speaking?: boolean; compact?: boolean }>()
+const uid = Math.random().toString(36).slice(2, 8)
 </script>
 
 <style scoped>

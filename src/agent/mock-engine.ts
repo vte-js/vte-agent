@@ -54,6 +54,23 @@ export const MOCK_SCENARIOS: MockScenario[] = [
     finalResponse: '已读取 package.json 文件内容。',
   },
   {
+    name: 'edit_with_diff',
+    description: '测试 edit 工具 - 编辑文件并显示代码差异',
+    steps: [
+      {
+        tool: 'read',
+        args: { path: 'src/app.ts' },
+        result: 'export function hello() {\n  return "hello"\n}\n',
+      },
+      {
+        tool: 'edit',
+        args: { path: 'src/app.ts', oldString: 'export function hello() {\n  return "hello"\n}', newString: 'export function hello(name: string): string {\n  return `hello ${name}`\n}' },
+        result: 'diff --git a/src/app.ts b/src/app.ts\nindex 1234567..abcdefg 100644\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,3 +1,3 @@\n-export function hello() {\n-  return "hello"\n+export function hello(name: string): string {\n+  return `hello ${name}`\n }',
+      },
+    ],
+    finalResponse: '已修改 src/app.ts：给 hello 函数添加了 name 参数和类型注解。',
+  },
+  {
     name: 'git_operations',
     description: '测试 git 工具 - 查看仓库状态（容错）',
     steps: [
@@ -162,6 +179,15 @@ export class MockEngine {
     }
 
     for (const step of scenario.steps) {
+      // Use predefined result if available (for mock scenarios)
+      if (step.result) {
+        results.push({
+          step,
+          result: { type: 'text', content: step.result },
+        });
+        continue;
+      }
+
       const tool = this.tools.find(t => t.name === step.tool);
       if (!tool) {
         results.push({
