@@ -29,6 +29,7 @@ import { ShadowGit } from './shadow-git';
 import { registerTools, getAllTools } from './registry';
 import { TaskMode, analyzeComplexity, checkLLMLaziness, getComplexityInstruction } from './complexity';
 import { recordUsage, getSessionStats, getRecentRecords } from './token-tracker';
+import { PermissionConfig, DEFAULT_PERMISSION_CONFIG, getPermissionLevel, TOOL_CATEGORIES } from '../core/permissions';
 
 export type AgentMode = 'plan' | 'code';
 
@@ -54,6 +55,8 @@ export class AgentEngine {
   private readonly MAX_HISTORY_MESSAGES = 20;
   private readonly MAX_TOOL_RESULT_CHARS = 2000;
   onViewUpdate?: (update: Record<string, unknown>) => void;
+  private permissionConfig: PermissionConfig = { ...DEFAULT_PERMISSION_CONFIG };
+  private pendingPermissionResolve?: (decision: 'allow_once' | 'always_allow' | 'deny') => void;
 
   constructor(
     context: ContextManager,
@@ -76,6 +79,64 @@ export class AgentEngine {
 
   setFeedback(feedback: Array<{ userMessage: string; assistantMessage: string; rating: 'up' | 'down'; comment?: string; timestamp: string }>) {
     this.feedback = feedback;
+  }
+
+  // ── Permission Management ──
+
+  setPermissionConfig(config: PermissionConfig) {
+    this.permissionConfig = { ...config };
+  }
+
+  getPermissionConfig(): PermissionConfig {
+    return { ...this.permissionConfig };
+  }
+
+  /**
+   * Request permission from user for a tool execution.
+   * Returns a Promise that resolves when the user responds.
+   */
+  requestPermission(toolName: string, toolArgs: Record<string, unknown>): Promise<'allow_once' | 'always_allow' | 'deny'> {
+    return new Promise((resolve) => {
+      this.pendingPermissionResolve = resolve;
+      const category = TOOL_CATEGORIES[toolName] || 'unknown';
+      this.onViewUpdate?.({
+        type: 'permission_request',
+        requestId: `perm_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        toolName,
+        toolArgs,
+        category,
+      });
+    });
+  }
+
+  /**
+   * Resolve a pending permission request.
+   * Called when the user responds to the authorization dialog.
+   */
+  resolvePermission(decision: 'allow_once' | 'always_allow' | 'deny', toolName?: string) {
+    if (this.pendingPermissionResolve) {
+      this.pendingPermissionResolve(decision);
+      this.pendingPermissionResolve = undefined;
+      // If user chose "always allow", update the config
+      if (decision === 'always_allow' && toolName) {
+        const category = TOOL_CATEGORIES[toolName];
+        if (category) {
+          this.permissionConfig[category] = 'allow';
+        }
+      }
+    }
+  }
+
+  // ── Reasoning Level ──
+
+  private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
+
+  setReasoningLevel(level: 'low' | 'medium' | 'high') {
+    this.reasoningLevel = level;
+  }
+
+  getReasoningLevel(): 'low' | 'medium' | 'high' {
+    return this.reasoningLevel;
   }
 
   // ── Context Management (token-efficient, inspired by OpenCode) ──
@@ -163,7 +224,7 @@ export class AgentEngine {
     return this.mode;
   }
 
-  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>): Promise<string> {
+  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string; content: string }>): Promise<string> {
     // Create abort controller for this request
     this.abortController = new AbortController();
 
@@ -177,30 +238,51 @@ export class AgentEngine {
     let detectedComplexity: ReturnType<typeof analyzeComplexity> | null = null;
     if (this.taskMode !== 'off' && userMessage.trim().length > 0 && this.mode === 'code') {
       detectedComplexity = analyzeComplexity(userMessage);
-      console.log(`[VTE] Complexity: score=${detectedComplexity.score} level=${detectedComplexity.level} needsTasks=${detectedComplexity.needsTasks}`);
 
       if (this.taskMode === 'plugin-auto') {
         complexityInstruction = getComplexityInstruction(detectedComplexity);
       }
     }
 
-    // Build user message content (text + images)
+    // Build user message content (text + context files + images)
     let userContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }> = userMessage;
-    if (images && images.length > 0) {
-      userContent = [
+    if ((context && context.length > 0) || (images && images.length > 0)) {
+      const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
         { type: 'text', text: userMessage },
-        ...images.map(img => ({
-          type: 'image_url' as const,
-          image_url: { url: img.dataUrl },
-        })),
       ];
+      // Add context file contents
+      if (context && context.length > 0) {
+        for (const ctx of context) {
+          parts.push({
+            type: 'text',
+            text: `\n--- File: ${ctx.name} (${ctx.path}) ---\n${ctx.content}\n--- End: ${ctx.name} ---`,
+          });
+        }
+      }
+      // Add images
+      if (images && images.length > 0) {
+        for (const img of images) {
+          parts.push({
+            type: 'image_url' as const,
+            image_url: { url: img.dataUrl },
+          });
+        }
+      }
+      userContent = parts;
     }
 
     this.messages.push({ role: 'user', content: userContent as string });
 
     // Build system prompt using template engine
+    let reasoningInstruction = '';
+    if (this.reasoningLevel === 'high') {
+      reasoningInstruction = 'Take time to think deeply. Analyze the problem from multiple angles before providing your answer. Consider edge cases, potential issues, and alternative approaches.';
+    } else if (this.reasoningLevel === 'medium') {
+      reasoningInstruction = 'Think step by step before answering.';
+    }
     const customInstructions = [
       complexityInstruction,
+      reasoningInstruction,
       this.feedback.length > 0 ? `User feedback available: ${this.feedback.length} entries` : '',
     ].filter(Boolean).join('\n')
 
@@ -289,6 +371,7 @@ export class AgentEngine {
   }
 
   private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {
+    console.log(`[VTE][DEBUG] callLLM START: ${this.messages.length} messages in history`);
     // Build API messages with proper content format
     const apiMessages = [
       { role: 'system', content: systemContent },
@@ -298,10 +381,16 @@ export class AgentEngine {
         if (typeof content === 'string') {
           return { role: m.role, content };
         }
-        // Already multimodal format
+        // Already multimodal format (array of parts)
+        const parts = content as unknown as any[];
+        console.log(`[VTE][DEBUG] Multimodal message: role=${m.role} parts=${parts.length}`);
         return { role: m.role, content };
       }),
     ];
+
+    // Log if any messages have images (arrays with more than 1 part = has images)
+    const multimodalCount = apiMessages.filter((m: any) => Array.isArray(m.content) && m.content.length > 1).length;
+    console.log(`[VTE][DEBUG] API request: ${apiMessages.length} messages, ${multimodalCount} multimodal`);
 
     const request: LLMRequest = {
       model: this.model,
@@ -314,16 +403,19 @@ export class AgentEngine {
           parameters: t.parameters,
         },
       })),
-      temperature: temperature ?? 0.7,
+      // Temperature: high reasoning uses lower temperature for more focused output
+      temperature: this.reasoningLevel === 'high' ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7),
       stream: true,
       stream_options: { include_usage: true },
       ...(topP !== undefined && { top_p: topP }),
       ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-      // Thinking mode: OpenAI compatible format
-      chat_template_kwargs: { enable_thinking: true },
+      // Thinking mode: controlled by reasoning level
+      ...(this.reasoningLevel !== 'low' ? { chat_template_kwargs: { enable_thinking: true } } : {}),
     };
 
-    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature} stream=true thinking=true`);
+    const thinkingEnabled = this.reasoningLevel !== 'low';
+    const effectiveTemp = this.reasoningLevel === 'high' ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7);
+    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${effectiveTemp} stream=true thinking=${thinkingEnabled} reasoning=${this.reasoningLevel}`);
 
     const response = await fetch(`${this.apiBase}/chat/completions`, {
       method: 'POST',
@@ -457,6 +549,29 @@ export class AgentEngine {
         this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: `Unknown tool: ${tc.function.name}`, elapsed: -1 });
         results.push({ type: 'error', content: `Unknown tool: ${tc.function.name}` });
         continue;
+      }
+
+      // ── Permission check (only in code mode) ──
+      if (this.mode === 'code') {
+        const permissionLevel = getPermissionLevel(tc.function.name, this.permissionConfig);
+        if (permissionLevel === 'deny') {
+          console.log(`[VTE] Permission denied: ${tc.function.name}`);
+          this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
+          this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '权限被拒绝', elapsed: -1 });
+          results.push({ type: 'error', content: `权限被拒绝: ${tc.function.name}` });
+          continue;
+        }
+        if (permissionLevel === 'ask') {
+          console.log(`[VTE] Requesting permission: ${tc.function.name}`);
+          const decision = await this.requestPermission(tc.function.name, args);
+          if (decision === 'deny') {
+            console.log(`[VTE] Permission denied by user: ${tc.function.name}`);
+            this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
+            this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '用户拒绝执行', elapsed: -1 });
+            results.push({ type: 'error', content: `用户拒绝执行: ${tc.function.name}` });
+            continue;
+          }
+        }
       }
 
       this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });

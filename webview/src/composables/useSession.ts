@@ -102,6 +102,10 @@ export function useSession() {
     send({ type: 'session:delete', sessionId })
   }
 
+  function deleteAllSessions() {
+    send({ type: 'session:deleteAll' })
+  }
+
   function renameSession(sessionId: string, name: string) {
     send({ type: 'session:rename', sessionId, name })
   }
@@ -133,6 +137,7 @@ export function useSession() {
     getSession,
     restoreSession,
     deleteSession,
+    deleteAllSessions,
     renameSession,
     tagSession,
     searchSessions,

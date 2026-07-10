@@ -31,11 +31,65 @@
     },
     "commands": [
       {
+        "command": "vte-agent.newSession",
+        "title": "新建会话",
+        "icon": "$(add)"
+      },
+      {
+        "command": "vte-agent.openSessions",
+        "title": "会话历史",
+        "icon": "$(history)"
+      },
+      {
+        "command": "vte-agent.openSkills",
+        "title": "Skills 管理",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "vte-agent.openConfig",
+        "title": "VTE Agent设置",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "vte-agent.clearChat",
+        "title": "清空对话",
+        "icon": "$(trash)"
+      },
+      {
         "command": "vte-agent.openChat",
         "title": "VTE Agent: Open Chat",
         "icon": "$(comment-discussion)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "vte-agent.newSession",
+          "when": "view == vte-agent.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vte-agent.openSessions",
+          "when": "view == vte-agent.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vte-agent.openSkills",
+          "when": "view == vte-agent.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "vte-agent.openConfig",
+          "when": "view == vte-agent.chat",
+          "group": "navigation@4"
+        },
+        {
+          "command": "vte-agent.clearChat",
+          "when": "view == vte-agent.chat",
+          "group": "navigation@5"
+        }
+      ]
+    },
     "configuration": {
       "title": "VTE Agent",
       "properties": {

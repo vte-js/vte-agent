@@ -26,6 +26,12 @@
               </svg>
               新建会话
             </button>
+            <button v-if="sessions.length > 0" class="session-action-btn danger" @click="showClearAll = true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+              清空
+            </button>
             <label class="session-action-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
@@ -75,11 +81,31 @@
       </div>
     </Transition>
   </Teleport>
+  <ConfirmDialog
+    :visible="!!deleteTarget"
+    title="确认删除"
+    message="确定要删除这个会话吗？此操作不可撤销。"
+    type="danger"
+    confirm-text="删除"
+    @confirm="confirmDelete"
+    @cancel="cancelDelete"
+  />
+  <ConfirmDialog
+    :visible="showClearAll"
+    title="清空所有会话"
+    :message="`确定要清空全部 ${sessions.length} 个会话吗？此操作不可撤销。`"
+    type="danger"
+    confirm-text="清空"
+    @confirm="confirmClearAll"
+    @cancel="showClearAll = false"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useSession } from '../composables/useSession'
+import { useNotification } from '../composables/useNotification'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{
   visible: boolean
@@ -90,8 +116,6 @@ const emit = defineEmits<{
   restore: [sessionId: string]
 }>()
 
-import { useNotification } from '../composables/useNotification'
-
 const {
   sessions,
   error,
@@ -100,6 +124,7 @@ const {
   listSessions,
   restoreSession,
   deleteSession,
+  deleteAllSessions,
   searchSessions,
   exportSession,
   importSession,
@@ -108,6 +133,8 @@ const {
 const { success, error: notifyError } = useNotification()
 
 const searchQuery = ref('')
+const deleteTarget = ref<string | null>(null)
+const showClearAll = ref(false)
 
 watch(() => props.visible, (val) => {
   if (val) {
@@ -134,7 +161,23 @@ function onRestore(id: string) {
 }
 
 function onDelete(id: string) {
-  deleteSession(id)
+  deleteTarget.value = id
+}
+
+function confirmDelete() {
+  if (deleteTarget.value) {
+    deleteSession(deleteTarget.value)
+    deleteTarget.value = null
+  }
+}
+
+function cancelDelete() {
+  deleteTarget.value = null
+}
+
+function confirmClearAll() {
+  deleteAllSessions()
+  showClearAll.value = false
 }
 
 function onExport(id: string) {
@@ -227,6 +270,10 @@ function formatDate(ts: number): string {
   background: var(--vte-primary); border-color: var(--vte-primary); color: #fff;
 }
 .session-action-btn.primary:hover { opacity: 0.9; }
+.session-action-btn.danger {
+  background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: #ef4444;
+}
+.session-action-btn.danger:hover { background: rgba(239,68,68,0.2); border-color: #ef4444; }
 
 .session-content {
   flex: 1; overflow-y: auto; padding: 16px;

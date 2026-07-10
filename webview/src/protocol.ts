@@ -5,19 +5,37 @@ export interface ImageAttachment {
   mimeType: string
 }
 
+export interface ContextAttachment {
+  path: string
+  name: string
+}
+
 export type WebviewToHostMessage =
-  | { type: 'chat'; text: string; model: string; temperature: number; topP: number; maxTokens: number; images?: ImageAttachment[] }
+  | { type: 'chat'; text: string; model: string; temperature: number; topP: number; maxTokens: number; images?: ImageAttachment[]; context?: ContextAttachment[] }
+  | { type: 'requestContext'; source: 'file' | 'folder' | 'doc' | 'skills' | 'terminal' | 'git' }
+  | { type: 'gitSelect'; source: 'changes' | 'commits'; items: string[] }
+  | { type: 'skills:list' }
+  | { type: 'skills:get'; skillPath: string }
+  | { type: 'skills:save'; skillPath: string; content: string }
+  | { type: 'skills:create'; name: string; dir: string; description?: string }
+  | { type: 'skills:delete'; skillPath: string }
+  | { type: 'skills:openPanel' }
+  | { type: 'getPermissionConfig' }
+  | { type: 'setPermissionConfig'; config: Record<string, string> }
+  | { type: 'permissionResponse'; requestId: string; decision: 'allow_once' | 'always_allow' | 'deny' }
   | { type: 'clear' }
   | { type: 'saveConfig'; apiKey: string; apiBase: string; model: string }
   | { type: 'getConfig' }
   | { type: 'setMode'; mode: 'plan' | 'code' }
   | { type: 'setTaskMode'; taskMode: TaskMode }
+  | { type: 'setReasoningLevel'; level: ReasoningLevel }
   // Session management
   | { type: 'session:create'; name?: string }
   | { type: 'session:list' }
   | { type: 'session:get'; sessionId: string }
   | { type: 'session:restore'; sessionId: string }
   | { type: 'session:delete'; sessionId: string }
+  | { type: 'session:deleteAll' }
   | { type: 'session:rename'; sessionId: string; name: string }
   | { type: 'session:tag'; sessionId: string; tags: string[] }
   | { type: 'session:search'; query: string }
@@ -25,6 +43,7 @@ export type WebviewToHostMessage =
   | { type: 'session:import'; data: string }
 
 export type TaskMode = 'off' | 'llm-auto' | 'plugin-auto'
+export type ReasoningLevel = 'low' | 'medium' | 'high'
 
 export const TASK_MODE_OPTIONS: Array<{ value: TaskMode; label: string; desc: string }> = [
   { value: 'off', label: '关闭', desc: '不使用任务清单' },
@@ -37,6 +56,9 @@ export type HostToWebviewMessage =
   | { type: 'thinking' }
   | { type: 'response'; text: string }
   | { type: 'error'; text: string }
+  | { type: 'toast'; level: 'success' | 'error' | 'info' | 'warning'; text: string }
+  | { type: 'filePickerResult'; files: ContextAttachment[] }
+  | { type: 'gitData'; changes: string[]; commits: Array<{ hash: string; message: string }> }
   | { type: 'cleared' }
   | { type: 'configData'; apiKey: string; apiBase: string; model: string }
   | { type: 'configSaved' }
@@ -45,6 +67,17 @@ export type HostToWebviewMessage =
   | { type: 'tool_call'; toolCallId: string; name: string; arguments: Record<string, unknown> }
   | { type: 'tool_result'; toolCallId: string; result: string; elapsed: number }
   | { type: 'tokenStats'; totalPrompt: number; totalCompletion: number; totalTokens: number; totalCost: number; requestCount: number; perModel: Record<string, { tokens: number; cost: number; count: number }>; recent: Array<{ model: string; prompt: number; completion: number; total: number; cost: number }> }
+  // Skills management
+  | { type: 'skills:list'; skills: Array<{ name: string; path: string; dir: string; description: string }>; dirs: string[] }
+  | { type: 'skills:pickList'; skills: Array<{ name: string; path: string; description: string }> }
+  | { type: 'skills:pickConfirm'; paths: string[] }
+  // Permission control
+  | { type: 'permissionRequest'; requestId: string; toolName: string; toolArgs: Record<string, unknown>; category: string }
+  | { type: 'permissionConfig'; config: Record<string, string> }
+  | { type: 'skills:content'; path: string; content: string }
+  | { type: 'skills:saved'; path: string }
+  | { type: 'skills:created'; name: string; path: string }
+  | { type: 'skills:deleted'; path: string }
   // Session management
   | { type: 'session:list'; sessions: SessionMeta[] }
   | { type: 'session:created'; session: SessionMeta }

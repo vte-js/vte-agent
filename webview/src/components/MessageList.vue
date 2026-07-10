@@ -17,7 +17,7 @@
       <MessageBubble v-else :msg="msg as ChatMessage" :mode="mode"
         @execute-plan="(text) => $emit('executePlan', text)"
         @delete="$emit('deleteMessage', (msg as ChatMessage).id)"
-        @edit="(text) => $emit('startEdit', text)"
+        @edit="(text, id, ctx) => $emit('startEdit', text, id, ctx)"
         @feedback="(rating, comment) => $emit('feedback', (msg as ChatMessage).id, rating, comment)"
       />
     </template>
@@ -40,7 +40,7 @@ const props = defineProps<{
 defineEmits<{
   executePlan: [text: string]
   deleteMessage: [id: number]
-  startEdit: [text: string]
+  startEdit: [text: string, id: number, context: import('../protocol').ContextAttachment[]]
   feedback: [messageId: number, rating: 'up' | 'down', comment?: string]
 }>()
 

@@ -134,7 +134,7 @@ export class AgentEngine {
     return this.mode
   }
 
-  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>): Promise<string> {
+  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string; content: string }>): Promise<string> {
     // Create abort controller for this request
     this.abortController = new AbortController()
 
@@ -151,16 +151,31 @@ export class AgentEngine {
       // This keeps the core engine framework-agnostic
     }
 
-    // Build user message content (text + images)
+    // Build user message content (text + context files + images)
     let userContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }> = userMessage
-    if (images && images.length > 0) {
-      userContent = [
+    if ((context && context.length > 0) || (images && images.length > 0)) {
+      const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
         { type: 'text', text: userMessage },
-        ...images.map(img => ({
-          type: 'image_url' as const,
-          image_url: { url: img.dataUrl },
-        })),
       ]
+      // Add context file contents
+      if (context && context.length > 0) {
+        for (const ctx of context) {
+          parts.push({
+            type: 'text',
+            text: `\n--- File: ${ctx.name} (${ctx.path}) ---\n${ctx.content}\n--- End: ${ctx.name} ---`,
+          })
+        }
+      }
+      // Add images
+      if (images && images.length > 0) {
+        for (const img of images) {
+          parts.push({
+            type: 'image_url' as const,
+            image_url: { url: img.dataUrl },
+          })
+        }
+      }
+      userContent = parts
     }
 
     this.messages.push({ role: 'user', content: userContent as string })

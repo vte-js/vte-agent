@@ -34,7 +34,16 @@ try {
 
 export function useVsCode() {
   function send(msg: WebviewToHostMessage) {
-    vscode.postMessage(msg)
+    const payloadSize = JSON.stringify(msg).length
+    console.log(`[VTE-Web][DEBUG] useVsCode.send: type=${(msg as any).type} payloadSize=${payloadSize}`)
+    try {
+      // Deep clone to strip Vue reactive proxies — structured clone can't handle them
+      const plain = JSON.parse(JSON.stringify(msg))
+      vscode.postMessage(plain)
+      console.log(`[VTE-Web][DEBUG] useVsCode.send: postMessage succeeded`)
+    } catch (err: any) {
+      console.error(`[VTE-Web][DEBUG] useVsCode.send: postMessage FAILED: ${err.message}`)
+    }
   }
 
   function onMessage(handler: (msg: HostToWebviewMessage) => void) {

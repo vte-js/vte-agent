@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { useVsCode } from './useVsCode'
+import type { ReasoningLevel } from '../protocol'
 
 export interface ModelProfile {
   name: string
@@ -8,11 +9,46 @@ export interface ModelProfile {
   model: string
 }
 
+export interface PermissionConfig {
+  fileRead: 'allow' | 'ask' | 'deny'
+  fileWrite: 'allow' | 'ask' | 'deny'
+  terminal: 'allow' | 'ask' | 'deny'
+  git: 'allow' | 'ask' | 'deny'
+  diagnostics: 'allow' | 'ask' | 'deny'
+  web: 'allow' | 'ask' | 'deny'
+  task: 'allow' | 'ask' | 'deny'
+  checkpoint: 'allow' | 'ask' | 'deny'
+}
+
+export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
+  fileRead: 'allow',
+  fileWrite: 'ask',
+  terminal: 'ask',
+  git: 'allow',
+  diagnostics: 'allow',
+  web: 'ask',
+  task: 'allow',
+  checkpoint: 'allow',
+}
+
+export const PERMISSION_CATEGORIES: Array<{ key: keyof PermissionConfig; label: string; description: string }> = [
+  { key: 'fileRead', label: '文件读取', description: '读取文件内容和目录列表' },
+  { key: 'fileWrite', label: '文件写入', description: '编辑和创建文件' },
+  { key: 'terminal', label: '终端执行', description: '执行 Shell 命令' },
+  { key: 'git', label: 'Git 操作', description: '版本控制操作' },
+  { key: 'diagnostics', label: '代码诊断', description: '运行类型检查和 lint' },
+  { key: 'web', label: '网络请求', description: '访问外部 URL' },
+  { key: 'task', label: '任务管理', description: '创建和更新任务' },
+  { key: 'checkpoint', label: '快照管理', description: '保存和恢复快照' },
+]
+
 export function useConfig() {
   const { send, onMessage } = useVsCode()
   const configVisible = ref(false)
   const models = ref<ModelProfile[]>([])
   const activeModelIndex = ref(0)
+  const permissionConfig = ref<PermissionConfig>({ ...DEFAULT_PERMISSION_CONFIG })
+  const reasoningLevel = ref<ReasoningLevel>('medium')
 
   // Current active model (derived)
   const apiKey = ref('')
@@ -40,6 +76,8 @@ export function useConfig() {
       // handled by parent
     } else if (msg.type === 'showSettings') {
       configVisible.value = true
+    } else if (msg.type === 'permissionConfig') {
+      permissionConfig.value = { ...DEFAULT_PERMISSION_CONFIG, ...msg.config }
     }
   })
 
@@ -102,13 +140,25 @@ export function useConfig() {
     })
   }
 
+  function updatePermissionConfig(config: PermissionConfig) {
+    permissionConfig.value = { ...config }
+    send({ type: 'setPermissionConfig', config })
+  }
+
+  function setReasoningLevel(level: ReasoningLevel) {
+    reasoningLevel.value = level
+    send({ type: 'setReasoningLevel', level })
+  }
+
   function init() {
     send({ type: 'getConfig' })
+    send({ type: 'getPermissionConfig' })
   }
 
   return {
     configVisible, models, activeModelIndex,
-    apiKey, apiBase, model,
+    apiKey, apiBase, model, permissionConfig, reasoningLevel,
     toggleConfig, selectModel, addModel, updateModel, deleteModel, saveConfig, init,
+    updatePermissionConfig, setReasoningLevel,
   }
 }

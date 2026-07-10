@@ -32,6 +32,7 @@ export interface ChatMessage {
   timestamp: string
   thinkingText?: string
   images?: Array<{ name: string; dataUrl: string; mimeType: string }>
+  context?: Array<{ path: string; name: string }>
   toolCalls?: Array<{
     id: string
     name: string

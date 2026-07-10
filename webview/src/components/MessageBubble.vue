@@ -1,8 +1,8 @@
 <template>
   <div class="mg" :class="msg.role">
-    <div class="ml">
-      <AgentAvatar v-if="msg.role === 'assistant'" class="ml-icon" :speaking="isStreaming" compact />
-      {{ msg.role === 'user' ? '你' : 'VTE Agent' }}
+    <div v-if="msg.role === 'assistant'" class="ml">
+      <AgentAvatar class="ml-icon" :speaking="isStreaming" compact />
+      VTE Agent
     </div>
     <!-- Thinking: animation below name, content below animation -->
     <div v-if="msg.role === 'assistant' && msg.thinkingPhase && !msg.text" class="think-anim">
@@ -19,10 +19,22 @@
         <div class="tc-body">{{ msg.thinkingText }}</div>
       </div>
     </div>
-    <div v-if="msg.text || msg.role !== 'assistant' || !msg.thinkingPhase" class="mb">
+    <div v-if="msg.text || msg.images?.length || msg.context?.length || msg.role !== 'assistant' || !msg.thinkingPhase" class="mb">
+      <!-- Context file cards -->
+      <div v-if="msg.role === 'user' && msg.context?.length" class="msg-context">
+        <div v-for="(f, idx) in msg.context" :key="idx" class="ctx-file-card">
+          <div class="ctx-file-icon" :class="getFileExt(f.name)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </div>
+          <div class="ctx-file-info">
+            <span class="ctx-file-name">{{ f.name }}</span>
+            <span class="ctx-file-path">{{ getShortPath(f.path) }}</span>
+          </div>
+        </div>
+      </div>
       <!-- Image attachments -->
       <div v-if="msg.role === 'user' && msg.images?.length" class="msg-images">
-        <img v-for="(img, idx) in msg.images" :key="idx" :src="img.dataUrl" :alt="img.name" class="msg-image" />
+        <img v-for="(img, idx) in msg.images" :key="idx" :src="img.dataUrl" :alt="img.name" class="msg-image" @click="previewImage(img)" />
       </div>
       <ToolCallBlock v-if="msg.role === 'assistant' && msg.toolCalls?.length" :tool-calls="msg.toolCalls" />
       <!-- Error message with special styling -->
@@ -75,6 +87,7 @@
       </VTooltip>
     </div>
     <FeedbackModal :visible="showFeedbackModal" @close="showFeedbackModal = false" @submit="onFeedbackSubmit" />
+    <ImagePreview :src="previewSrc" :name="previewName" @close="previewSrc = ''" />
   </div>
 </template>
 
@@ -87,6 +100,7 @@ import VTooltip from './VTooltip.vue'
 import ToolCallBlock from './ToolCallBlock.vue'
 import AgentAvatar from './AgentAvatar.vue'
 import FeedbackModal from './FeedbackModal.vue'
+import ImagePreview from './ImagePreview.vue'
 
 const props = defineProps<{
   msg: ChatMessage
@@ -96,7 +110,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   executePlan: [text: string]
   delete: []
-  edit: [text: string]
+  edit: [text: string, id: number, context: import('../protocol').ContextAttachment[]]
   feedback: [rating: 'up' | 'down', comment?: string]
 }>()
 
@@ -112,6 +126,32 @@ const copied = ref(false)
 const feedback = ref<'up' | 'down' | null>(null)
 const showFeedbackModal = ref(false)
 const isStreaming = computed(() => (props.msg as any).streaming === true)
+const previewSrc = ref('')
+const previewName = ref('')
+
+function previewImage(img: { dataUrl: string; name: string }) {
+  previewSrc.value = img.dataUrl
+  previewName.value = img.name
+}
+
+function getFileExt(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() || ''
+  return ext
+}
+
+function getShortPath(path: string): string {
+  const parts = path.split('/')
+  if (parts.length <= 2) return path
+  return '.../' + parts.slice(-2).join('/')
+}
+
+function onPreviewKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') previewSrc.value = ''
+}
+
+import { onMounted, onUnmounted } from 'vue'
+onMounted(() => window.addEventListener('keydown', onPreviewKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onPreviewKeydown))
 
 function copyText() {
   navigator.clipboard.writeText(props.msg.text)
@@ -135,6 +175,6 @@ function onFeedbackSubmit(comment: string) {
 }
 
 function startEdit() {
-  emit('edit', props.msg.text)
+  emit('edit', props.msg.text, props.msg.id, props.msg.context || [])
 }
 </script>

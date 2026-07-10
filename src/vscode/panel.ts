@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentEngine, AgentMode } from '../agent/engine';
 import { getAllTasks } from '../agent/tasks';
+import { loadBuiltinSkills, getBuiltinSkillContent } from '../skills/builtin';
 import { getSessionStats, getRecentRecords } from '../agent/token-tracker';
 import { VTEContextManager } from '../context/manager';
 import { runGrayBoxTests, formatTestResults } from '../agent/test-runner';
@@ -26,6 +27,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private sessionManager?: SessionManager;
   private currentSessionId?: string;
   private mode: AgentMode = 'code';
+  private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
   // Track chat history for cross-webview sync
   private chatHistory: Array<{
     id: number;
@@ -34,6 +36,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     timestamp: string;
     thinkingText?: string;
     images?: Array<{ name: string; dataUrl: string; mimeType: string }>;
+    context?: Array<{ path: string; name: string }>;
     toolCalls?: Array<{
       id: string;
       name: string;
@@ -64,7 +67,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Post message to all active webviews */
-  private postMessage(msg: any) {
+  public postMessage(msg: any) {
     this.view?.webview.postMessage(msg);
     this.panel?.webview.postMessage(msg);
   }
@@ -134,10 +137,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     webview.onDidReceiveMessage(async (message) => {
       log(`Received: ${message.type}`);
+      try {
       switch (message.type) {
         case 'chat':
-          this.trackUserMessage(message.text, message.images);
-          await this.handleChat(message.text, message.model, message.temperature, message.topP, message.maxTokens, message.images);
+          this.trackUserMessage(message.text, message.images, message.context);
+          await this.handleChat(message.text, message.model, message.temperature, message.topP, message.maxTokens, message.images, message.context);
           break;
         case 'clear':
           this.engine?.clearHistory();
@@ -166,9 +170,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.engine?.setTaskMode(message.taskMode);
           log(`Task mode changed to: ${message.taskMode}`);
           break;
+        case 'setReasoningLevel':
+          this.reasoningLevel = message.level;
+          this.engine?.setReasoningLevel(message.level);
+          log(`Reasoning level changed to: ${message.level}`);
+          break;
         case 'abort':
           this.engine?.abort();
-          this.postMessage({ type: 'error', text: '已停止' });
           break;
         case 'runTests':
           await this.handleRunTests();
@@ -176,17 +184,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'feedback':
           this.handleFeedback(message.messageId, message.rating, message.userMessage, message.assistantMessage, message.comment);
           break;
-        case 'saveCheckpoint':
-          await this.saveCheckpoint(message.name);
+        case 'gitSelect':
+          await this.handleGitSelect(message.source, message.items);
           break;
-        case 'restoreCheckpoint':
-          await this.restoreCheckpoint(message.checkpointId);
+        case 'requestContext':
+          await this.handleContextRequest(message.source);
           break;
-        case 'deleteCheckpoint':
-          await this.deleteCheckpoint(message.checkpointId);
+        case 'getPermissionConfig':
+          this.handleGetPermissionConfig();
           break;
-        case 'listCheckpoints':
-          this.listCheckpoints();
+        case 'setPermissionConfig':
+          this.handleSetPermissionConfig(message.config);
+          break;
+        case 'permissionResponse':
+          this.handlePermissionResponse(message.requestId, message.decision);
           break;
         // Session management
         case 'session:create':
@@ -204,6 +215,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'session:delete':
           await this.deleteSession(message.sessionId);
           break;
+        case 'session:deleteAll':
+          await this.deleteAllSessions();
+          break;
         case 'session:rename':
           await this.renameSession(message.sessionId, message.name);
           break;
@@ -219,18 +233,446 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'session:import':
           await this.importSession(message.data);
           break;
+        case 'skills:list':
+          this.handleSkillsList();
+          break;
+        case 'skills:get':
+          this.handleSkillsGet(message.skillPath);
+          break;
+        case 'skills:save':
+          this.handleSkillsSave(message.skillPath, message.content);
+          break;
+        case 'skills:create':
+          this.handleSkillsCreate(message.name, message.dir, message.description);
+          break;
+        case 'skills:delete':
+          this.handleSkillsDelete(message.skillPath);
+          break;
+        case 'skills:openPanel':
+          this.postMessage({ type: 'skills:openPanel' });
+          break;
+      }
+      } catch (err: any) {
+        log(`[DEBUG] ERROR in onDidReceiveMessage handler: ${err.message}`);
+        log(`[DEBUG] Stack: ${err.stack}`);
+        // If it was a chat message, make sure the webview gets an error response
+        if (message.type === 'chat') {
+          this.postMessage({ type: 'error', text: `Internal error: ${err.message}` });
+        }
       }
     });
   }
 
-  private trackUserMessage(text: string, images?: Array<{ name: string; dataUrl: string; mimeType: string }>) {
+  private trackUserMessage(text: string, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string }>) {
     this.chatHistory.push({
       id: this.nextMsgId++,
       role: 'user',
       text,
       timestamp: new Date().toLocaleTimeString(),
       images,
+      context,
     });
+  }
+
+  private async handleGitSelect(type: string, items: string[]) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) return;
+
+    const files: Array<{ path: string; name: string }> = [];
+
+    if (type === 'changes') {
+      for (const f of items) {
+        files.push({ path: path.join(workspaceRoot, f), name: f });
+      }
+    } else if (type === 'commits') {
+      const { execSync } = require('child_process');
+      for (const hash of items) {
+        try {
+          const details = execSync(`git show --stat --format="%H%n%s%n%b" ${hash}`, { cwd: workspaceRoot, encoding: 'utf-8' });
+          const fileChanges = execSync(`git diff-tree --no-commit-id --name-only -r ${hash}`, { cwd: workspaceRoot, encoding: 'utf-8' }).trim();
+          const commitMsg = details.split('\n')[1] || hash;
+          const content = `Commit: ${hash}\nMessage: ${commitMsg}\n\nChanged files:\n${fileChanges}\n\nDiff:\n${details}`;
+          files.push({ path: `__git_commit__:${hash}`, name: `commit: ${commitMsg}` });
+          if (!this._pendingGitContents) this._pendingGitContents = {};
+          this._pendingGitContents[hash] = content;
+        } catch { /* skip */ }
+      }
+    }
+
+    if (files.length > 0) {
+      this.postMessage({ type: 'filePickerResult', files });
+    }
+  }
+
+  private async captureTerminalOutput(terminal: vscode.Terminal): Promise<string> {
+    // Try VSCode Shell Integration API (1.93+)
+    const shellIntegration = (terminal as any).shellIntegration;
+    if (shellIntegration && typeof shellIntegration.executeCommand === 'function') {
+      try {
+        const execution = shellIntegration.executeCommand('echo $VTE_LAST_COMMAND_OUTPUT');
+        const reader = execution.read();
+        let output = '';
+        for await (const chunk of reader) {
+          output += chunk;
+        }
+        if (output.trim()) return output.trim();
+      } catch { /* fall through */ }
+    }
+
+    // Fallback: Use script command to capture output
+    return new Promise<string>((resolve) => {
+      const marker = `__VTE_${Date.now()}__`;
+      terminal.sendText(`echo ${marker} && history -100 2>/dev/null | tail -50 && echo ${marker}`);
+
+      // Poll clipboard as fallback
+      let attempts = 0;
+      const interval = setInterval(async () => {
+        attempts++;
+        if (attempts > 15) {
+          clearInterval(interval);
+          resolve('');
+          return;
+        }
+        try {
+          const clip = await vscode.env.clipboard.readText();
+          if (clip && clip.includes(marker)) {
+            clearInterval(interval);
+            const parts = clip.split(marker);
+            resolve(parts[1]?.trim() || '');
+          }
+        } catch { /* continue */ }
+      }, 200);
+    });
+  }
+
+  private async handleContextRequest(source: string) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    let files: Array<{ path: string; name: string }> = [];
+
+    switch (source) {
+      case 'file': {
+        const uris = await vscode.window.showOpenDialog({
+          canSelectMany: true, canSelectFiles: true, canSelectFolders: false,
+          openLabel: '添加文件',
+        });
+        if (uris) files = uris.map(uri => ({ path: uri.fsPath, name: uri.path.split('/').pop() || '' }));
+        break;
+      }
+      case 'folder': {
+        const uris = await vscode.window.showOpenDialog({
+          canSelectMany: true, canSelectFiles: false, canSelectFolders: true,
+          openLabel: '添加文件夹',
+        });
+        if (uris) files = uris.map(uri => ({ path: uri.fsPath, name: uri.path.split('/').pop() || '' }));
+        break;
+      }
+      case 'doc': {
+        const uris = await vscode.window.showOpenDialog({
+          canSelectMany: true, canSelectFiles: true, canSelectFolders: false,
+          filters: { 'Documents': ['md', 'txt', 'rst', 'adoc', 'doc', 'docx', 'pdf'] },
+          openLabel: '添加文档',
+        });
+        if (uris) files = uris.map(uri => ({ path: uri.fsPath, name: uri.path.split('/').pop() || '' }));
+        break;
+      }
+      case 'skills': {
+        // Send skills list (built-in + project) to webview for selection
+        const skillsForPick: Array<{ name: string; path: string; description: string }> = [];
+
+        // Add built-in skills
+        const builtinSkills = loadBuiltinSkills();
+        for (const bs of builtinSkills) {
+          skillsForPick.push({
+            name: `[内置] ${bs.name}`,
+            path: bs.path,
+            description: bs.description,
+          });
+        }
+
+        // Add project skills
+        if (workspaceRoot) {
+          const skillScanDirs = ['.claude/skills', '.agents/skills', '.opencode/skills'];
+          for (const dir of skillScanDirs) {
+            const fullPath = path.join(workspaceRoot, dir);
+            if (!fs.existsSync(fullPath)) continue;
+            try {
+              const entries = fs.readdirSync(fullPath, { withFileTypes: true });
+              for (const entry of entries) {
+                if (entry.isDirectory()) {
+                  const skillFile = path.join(fullPath, entry.name, 'SKILL.md');
+                  if (fs.existsSync(skillFile)) {
+                    const content = fs.readFileSync(skillFile, 'utf-8');
+                    const meta = this.parseSkillMeta(content);
+                    skillsForPick.push({
+                      name: meta.name || entry.name,
+                      path: skillFile,
+                      description: meta.description || '',
+                    });
+                  }
+                }
+              }
+            } catch { /* skip */ }
+          }
+        }
+
+        if (skillsForPick.length === 0) {
+          this.postMessage({ type: 'toast', level: 'info', text: '未找到 Skills 文件' });
+          return;
+        }
+        this.postMessage({ type: 'skills:pickList', skills: skillsForPick });
+        return;
+      }
+      case 'terminal': {
+        const terminal = vscode.window.activeTerminal;
+        if (!terminal) {
+          this.postMessage({ type: 'error', text: '没有活动的终端' });
+          return;
+        }
+        // Try to read terminal buffer via shell integration
+        const output = await this.captureTerminalOutput(terminal);
+        if (output) {
+          files = [{ path: '__terminal_output__', name: '终端输出' }];
+          this._pendingTerminalContent = output;
+        } else {
+          this.postMessage({ type: 'error', text: '无法读取终端输出，请确保终端有活动内容' });
+          return;
+        }
+        break;
+      }
+      case 'git': {
+        if (!workspaceRoot) break;
+        try {
+          const { execSync } = require('child_process');
+          // Check if it's a git repo first
+          try {
+            execSync('git rev-parse --is-inside-work-tree', { cwd: workspaceRoot, encoding: 'utf-8', stdio: 'ignore' });
+          } catch {
+            this.postMessage({ type: 'error', text: '当前工作区不是 Git 仓库' });
+            return;
+          }
+          // Get changed files
+          const diff = execSync('git diff --name-only HEAD', { cwd: workspaceRoot, encoding: 'utf-8' }).trim();
+          const staged = execSync('git diff --name-only --cached', { cwd: workspaceRoot, encoding: 'utf-8' }).trim();
+          const untracked = execSync('git ls-files --others --exclude-standard', { cwd: workspaceRoot, encoding: 'utf-8' }).trim();
+          const changes = [...new Set([
+            ...diff.split('\n').filter(Boolean),
+            ...staged.split('\n').filter(Boolean),
+            ...untracked.split('\n').filter(Boolean),
+          ])];
+          // Get recent commits
+          const log = execSync('git log --oneline -20', { cwd: workspaceRoot, encoding: 'utf-8' }).trim();
+          const commits = log.split('\n').filter(Boolean).map((line: string) => {
+            const [hash, ...rest] = line.split(' ');
+            return { hash, message: rest.join(' ') };
+          });
+          // Send data to webview
+          this.postMessage({ type: 'gitData', changes, commits });
+        } catch (err: any) {
+          this.postMessage({ type: 'error', text: `Git 错误: ${err.message}` });
+        }
+        break;
+      }
+    }
+
+    if (files.length > 0) {
+      this.postMessage({ type: 'filePickerResult', files });
+    }
+  }
+
+  private _pendingTerminalContent?: string;
+  private _pendingGitContents?: Record<string, string>;
+
+  // ── Skills Management ──
+
+  private getSkillDirs(): string[] {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) return [];
+    return ['.claude/skills', '.agents/skills', '.opencode/skills'].map(d => path.join(workspaceRoot, d));
+  }
+
+  private handleSkillsList() {
+    const skills: Array<{ name: string; path: string; dir: string; description: string; builtin?: boolean }> = [];
+    const allDirs: string[] = [];
+
+    // Add built-in skills
+    const builtinSkills = loadBuiltinSkills();
+    for (const bs of builtinSkills) {
+      skills.push({
+        name: bs.name,
+        path: bs.path,
+        dir: '内置',
+        description: bs.description,
+        builtin: true,
+      });
+    }
+
+    // Add project skills
+    for (const dir of this.getSkillDirs()) {
+      allDirs.push(dir);
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const skillFile = path.join(dir, entry.name, 'SKILL.md');
+            if (fs.existsSync(skillFile)) {
+              const content = fs.readFileSync(skillFile, 'utf-8');
+              const meta = this.parseSkillMeta(content);
+              skills.push({
+                name: meta.name || entry.name,
+                path: skillFile,
+                dir: path.basename(path.dirname(dir)) + '/' + entry.name,
+                description: meta.description || '',
+              });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+    this.postMessage({ type: 'skills:list', skills: skills.reverse(), dirs: allDirs });
+  }
+
+  private parseSkillMeta(content: string): { name: string; description: string } {
+    let name = '';
+    let description = '';
+
+    // Try YAML frontmatter: ---\nname: ...\ndescription: ...\n---
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const fm = fmMatch[1];
+      const nameMatch = fm.match(/^name:\s*(.+)$/m);
+      const descMatch = fm.match(/^description:\s*(.+)$/m);
+      if (nameMatch) name = nameMatch[1].trim();
+      if (descMatch) description = descMatch[1].trim();
+    }
+
+    // Fallback: # Title + first paragraph
+    if (!name) {
+      const titleMatch = content.match(/^#\s+(.+)$/m);
+      if (titleMatch) name = titleMatch[1].trim();
+    }
+    if (!description) {
+      // Find first non-empty paragraph after title
+      const lines = content.split('\n');
+      let foundTitle = false;
+      for (const line of lines) {
+        if (line.startsWith('#')) { foundTitle = true; continue; }
+        if (foundTitle && line.trim() && !line.startsWith('#') && !line.startsWith('---')) {
+          description = line.trim().substring(0, 120);
+          break;
+        }
+      }
+    }
+
+    return { name, description };
+  }
+
+  private handleSkillsGet(skillPath: string) {
+    try {
+      // Check if it's a built-in skill
+      const builtinContent = getBuiltinSkillContent(skillPath);
+      if (builtinContent) {
+        this.postMessage({ type: 'skills:content', path: skillPath, content: builtinContent });
+        return;
+      }
+      const content = fs.readFileSync(skillPath, 'utf-8');
+      this.postMessage({ type: 'skills:content', path: skillPath, content });
+    } catch (err: any) {
+      this.postMessage({ type: 'toast', level: 'error', text: `读取失败: ${err.message}` });
+    }
+  }
+
+  private handleSkillsSave(skillPath: string, content: string) {
+    try {
+      fs.writeFileSync(skillPath, content, 'utf-8');
+      this.postMessage({ type: 'skills:saved', path: skillPath });
+      this.postMessage({ type: 'toast', level: 'success', text: '保存成功' });
+      log(`Skill saved: ${skillPath}`);
+    } catch (err: any) {
+      this.postMessage({ type: 'toast', level: 'error', text: `保存失败: ${err.message}` });
+    }
+  }
+
+  private handleSkillsCreate(name: string, dir: string, description?: string) {
+    try {
+      const skillDir = path.join(dir, name);
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      const desc = description || 'Describe what this skill does.';
+      const content = `---
+name: ${name}
+description: ${desc}
+---
+
+# ${name}
+
+## Description
+
+${desc}
+
+## Trigger
+
+Describe when this skill should be activated.
+
+## Usage
+
+Describe how to use this skill.
+
+## Examples
+
+\`\`\`
+Example usage here
+\`\`\`
+`;
+      fs.writeFileSync(skillFile, content, 'utf-8');
+      this.postMessage({ type: 'skills:created', name, path: skillFile });
+      this.postMessage({ type: 'toast', level: 'success', text: `Skill "${name}" 创建成功` });
+      log(`Skill created: ${skillFile}`);
+    } catch (err: any) {
+      this.postMessage({ type: 'toast', level: 'error', text: `创建失败: ${err.message}` });
+    }
+  }
+
+  private handleSkillsDelete(skillPath: string) {
+    try {
+      const skillDir = path.dirname(skillPath);
+      fs.rmSync(skillDir, { recursive: true, force: true });
+      this.postMessage({ type: 'skills:deleted', path: skillPath });
+      this.postMessage({ type: 'toast', level: 'success', text: '删除成功' });
+      log(`Skill deleted: ${skillPath}`);
+    } catch (err: any) {
+      this.postMessage({ type: 'toast', level: 'error', text: `删除失败: ${err.message}` });
+    }
+  }
+
+  private readDirRecursive(dirPath: string, maxFiles = 50): Array<{ path: string; name: string }> {
+    const results: Array<{ path: string; name: string }> = [];
+    const skipDirs = ['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', '.vscode'];
+    const skipExts = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.zip', '.tar', '.gz'];
+
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (results.length >= maxFiles) break;
+        if (skipDirs.includes(entry.name)) continue;
+
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          results.push(...this.readDirRecursive(fullPath, maxFiles - results.length));
+        } else {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (skipExts.includes(ext)) continue;
+          // Skip binary files by size
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.size > 100 * 1024) continue; // Skip files > 100KB
+            results.push({ path: fullPath, name: entry.name });
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* skip unreadable dirs */ }
+
+    return results;
   }
 
   private trackAssistantMessage(text: string, role: 'assistant' | 'error' = 'assistant') {
@@ -308,102 +750,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private stripSystemReminder(text: string): string {
     // Remove <system-reminder>...</system-reminder> blocks
     return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
-  }
-
-  // ── Checkpoint Methods ──
-
-  private getCheckpointDir(): string {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
-    return path.join(workspaceRoot, '.vte', 'checkpoints');
-  }
-
-  private async saveCheckpoint(name?: string) {
-    if (!this.engine) {
-      this.postMessage({ type: 'checkpointError', text: 'No active session' });
-      return;
-    }
-
-    try {
-      const result = this.engine.createCheckpoint(name);
-      if (!result) {
-        this.postMessage({ type: 'checkpointError', text: 'No changes to checkpoint' });
-        return;
-      }
-
-      log(`Checkpoint saved: ${name} (${result.commitHash.substring(0, 7)})`);
-      this.postMessage({ type: 'checkpointSaved', checkpoint: { id: result.commitHash, name: name || 'Checkpoint', timestamp: Date.now() } });
-    } catch (err: any) {
-      log(`Failed to save checkpoint: ${err.message}`);
-      this.postMessage({ type: 'checkpointError', text: `保存失败: ${err.message}` });
-    }
-  }
-
-  private async restoreCheckpoint(commitHash: string) {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceRoot) {
-      this.postMessage({ type: 'checkpointError', text: '没有打开的工作区' });
-      return;
-    }
-
-    log(`Restoring checkpoint: ${commitHash}`);
-
-    // Use engine's shadow-git if available, otherwise create standalone instance
-    let shadowGit: ShadowGit | undefined = this.engine?.getShadowGit();
-    if (!shadowGit) {
-      shadowGit = new ShadowGit(workspaceRoot);
-    }
-
-    try {
-      const restoredFiles = shadowGit.restoreCheckpoint(commitHash);
-      log(`Restored files: ${restoredFiles.length} - ${restoredFiles.join(', ')}`);
-
-      if (restoredFiles.length > 0) {
-        this.postMessage({ type: 'checkpointRestored', name: commitHash.substring(0, 7) });
-        log(`Checkpoint restored: ${commitHash.substring(0, 7)} (${restoredFiles.length} files)`);
-      } else {
-        this.postMessage({ type: 'checkpointError', text: '没有找到可恢复的文件' });
-      }
-    } catch (err: any) {
-      log(`Failed to restore checkpoint: ${err.message}`);
-      this.postMessage({ type: 'checkpointError', text: `恢复失败: ${err.message}` });
-    }
-  }
-
-  private async deleteCheckpoint(commitHash: string) {
-    // Git commits are immutable, but we can try to remove the reference
-    // For now, just inform the user
-    this.postMessage({ type: 'checkpointError', text: '快照是 Git 提交，无法删除。旧的快照会自动清理。' });
-  }
-
-  private listCheckpoints() {
-    // Try to get shadow-git from engine or use standalone instance
-    let shadowGit: ShadowGit | undefined = this.engine?.getShadowGit();
-
-    if (!shadowGit) {
-      // Create standalone shadow-git instance for listing checkpoints
-      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!workspaceRoot) {
-        this.postMessage({ type: 'checkpointList', checkpoints: [] });
-        return;
-      }
-      shadowGit = new ShadowGit(workspaceRoot);
-    }
-
-    try {
-      const commits = shadowGit.log(20);
-      const checkpoints = commits
-        .filter((c: any) => c.message.startsWith('Checkpoint:'))
-        .map((c: any) => ({
-          id: c.hash,
-          name: c.message.replace('Checkpoint: ', ''),
-          timestamp: c.timestamp,
-        }));
-
-      this.postMessage({ type: 'checkpointList', checkpoints });
-    } catch (err: any) {
-      log(`Failed to list checkpoints: ${err.message}`);
-      this.postMessage({ type: 'checkpointList', checkpoints: [] });
-    }
   }
 
   // ── Session Management Methods ──
@@ -492,6 +838,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         timestamp: m.timestamp,
         thinkingText: m.thinkingText,
         images: m.images,
+        context: m.context,
         toolCalls: m.toolCalls,
       }));
       this.nextMsgId = this.chatHistory.length > 0
@@ -527,6 +874,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (err: any) {
       log(`Failed to delete session: ${err.message}`);
       this.postMessage({ type: 'session:error', text: `删除失败: ${err.message}` });
+    }
+  }
+
+  private async deleteAllSessions() {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      const sessions = await sm.listSessions();
+      for (const session of sessions) {
+        await sm.deleteSession(session.id);
+      }
+      this.currentSessionId = undefined;
+      this.postMessage({ type: 'session:deleted', sessionId: 'all' });
+      this.postMessage({ type: 'toast', level: 'success', text: `已清空 ${sessions.length} 个会话` });
+      log(`All sessions deleted: ${sessions.length}`);
+    } catch (err: any) {
+      log(`Failed to delete all sessions: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `清空失败: ${err.message}` });
     }
   }
 
@@ -611,6 +977,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         timestamp: m.timestamp,
         thinkingText: m.thinkingText,
         images: m.images,
+        context: m.context,
         toolCalls: m.toolCalls,
       }));
 
@@ -650,74 +1017,151 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return html;
   }
 
-  private async handleChat(text: string, model?: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>) {
-    log(`Chat: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}" | model=${model} temp=${temperature} topP=${topP} maxTokens=${maxTokens} images=${images?.length || 0}`);
+  private async handleChat(text: string, model?: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string }>) {
+    log(`[DEBUG] handleChat START: text="${text.substring(0, 100)}${text.length > 100 ? '...' : ''}" model=${model} temp=${temperature} topP=${topP} maxTokens=${maxTokens} images=${images?.length || 0}`);
 
     // Auto-create session if none exists
     if (!this.currentSessionId) {
+      log(`[DEBUG] No currentSessionId, attempting auto-create session`);
       const sm = this.getSessionManager();
       if (sm) {
         const sessionModel = model || vscode.workspace.getConfiguration('vteCode').get<string>('model', 'unknown');
-        const session = await sm.createSession(undefined, sessionModel);
-        this.currentSessionId = session.id;
-        log(`Auto-created session: ${session.id}`);
+        log(`[DEBUG] Session manager found, creating session with model=${sessionModel}`);
+        try {
+          const session = await sm.createSession(undefined, sessionModel);
+          this.currentSessionId = session.id;
+          log(`[DEBUG] Auto-created session: ${session.id}`);
+        } catch (sessionErr: any) {
+          log(`[DEBUG] ERROR creating session: ${sessionErr.message}`);
+          log(`[DEBUG] Stack: ${sessionErr.stack}`);
+          this.postMessage({ type: 'error', text: `Failed to create session: ${sessionErr.message}` });
+          return;
+        }
+      } else {
+        log(`[DEBUG] WARNING: No session manager available, proceeding without session`);
       }
+    } else {
+      log(`[DEBUG] Using existing session: ${this.currentSessionId}`);
     }
 
     if (!this.engine) {
+      log(`[DEBUG] No engine, creating new one`);
       const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!workspaceRoot) {
         this.postMessage({ type: 'error', text: 'No workspace open' });
-        log('ERROR: No workspace open');
+        log('[DEBUG] ERROR: No workspace open');
         return;
       }
       const config = vscode.workspace.getConfiguration('vteCode');
       const apiKey = config.get<string>('apiKey', '');
       const apiBase = config.get<string>('apiBase', 'https://api.openai.com/v1');
       const cfgModel = config.get<string>('model', 'gpt-4');
+      log(`[DEBUG] Config: apiKey=${apiKey ? '***set***' : 'EMPTY'} apiBase=${apiBase} cfgModel=${cfgModel} workspace=${workspaceRoot}`);
       if (!apiKey) {
         this.postMessage({ type: 'showSettings' });
         this.postMessage({ type: 'error', text: '请先配置 API Key' });
-        log('ERROR: No API key configured');
+        log('[DEBUG] ERROR: No API key configured');
         return;
       }
-      log(`Creating engine: model=${model || cfgModel} base=${apiBase} workspace=${workspaceRoot}`);
-      const ctx = new VTEContextManager(workspaceRoot);
-      this.engine = new AgentEngine(ctx, model || cfgModel, apiKey, apiBase, workspaceRoot);
-      // Load existing feedback for calibration
-      const existingFeedback = this.loadFeedback();
-      if (existingFeedback.length > 0) {
-        this.engine.setFeedback(existingFeedback);
-        log(`Loaded ${existingFeedback.length} feedback entries`);
-      }
-      this.engine.onViewUpdate = (update) => {
-        if (update.type === 'thinking_chunk') {
-          this.pendingThinking += update.text as string;
-        } else if (update.type === 'tool_call') {
-          this.pendingToolCalls.push({
-            id: update.toolCallId as string,
-            name: update.name as string,
-            arguments: update.arguments as Record<string, unknown>,
-            status: 'running',
-          });
-        } else if (update.type === 'tool_result') {
-          const tc = this.pendingToolCalls.find(t => t.id === (update.toolCallId as string));
-          if (tc) {
-            tc.status = (update.elapsed as number) < 0 ? 'error' : 'done';
-            tc.result = update.result as string;
-            tc.elapsed = Math.abs(update.elapsed as number);
-          }
+      log(`[DEBUG] Creating engine: model=${model || cfgModel} base=${apiBase}`);
+      try {
+        const ctx = new VTEContextManager(workspaceRoot);
+        this.engine = new AgentEngine(ctx, model || cfgModel, apiKey, apiBase, workspaceRoot);
+        this.engine.setReasoningLevel(this.reasoningLevel);
+        log(`[DEBUG] Engine created successfully`);
+        // Load existing feedback for calibration
+        const existingFeedback = this.loadFeedback();
+        if (existingFeedback.length > 0) {
+          this.engine.setFeedback(existingFeedback);
+          log(`[DEBUG] Loaded ${existingFeedback.length} feedback entries`);
         }
-        this.postMessage(update);
-      };
+        this.engine.onViewUpdate = (update) => {
+          if (update.type === 'thinking_chunk') {
+            this.pendingThinking += update.text as string;
+          } else if (update.type === 'tool_call') {
+            this.pendingToolCalls.push({
+              id: update.toolCallId as string,
+              name: update.name as string,
+              arguments: update.arguments as Record<string, unknown>,
+              status: 'running',
+            });
+          } else if (update.type === 'tool_result') {
+            const tc = this.pendingToolCalls.find(t => t.id === (update.toolCallId as string));
+            if (tc) {
+              tc.status = (update.elapsed as number) < 0 ? 'error' : 'done';
+              tc.result = update.result as string;
+              tc.elapsed = Math.abs(update.elapsed as number);
+            }
+          } else if (update.type === 'permission_request') {
+            // Forward permission request to webview
+            this._pendingPermissionTool = update.toolName as string;
+            this.postMessage({
+              type: 'permissionRequest',
+              requestId: update.requestId as string,
+              toolName: update.toolName as string,
+              toolArgs: update.toolArgs as Record<string, unknown>,
+              category: update.category as string,
+            });
+          }
+          this.postMessage(update);
+        };
+      } catch (engineErr: any) {
+        log(`[DEBUG] ERROR creating engine: ${engineErr.message}`);
+        log(`[DEBUG] Stack: ${engineErr.stack}`);
+        this.postMessage({ type: 'error', text: `Failed to create engine: ${engineErr.message}` });
+        return;
+      }
+    } else {
+      log(`[DEBUG] Using existing engine`);
     }
     if (model) { this.engine.setModel(model); }
 
     this.pendingThinking = '';
     this.postMessage({ type: 'thinking' });
     try {
-      log('Calling LLM...');
-      const rawReply = await this.engine.chat(text, temperature, topP, maxTokens, images);
+      // Read file contents for context attachments
+      let enrichedContext: Array<{ path: string; name: string; content: string }> | undefined;
+      if (context && context.length > 0) {
+        enrichedContext = [];
+        for (const ctx of context) {
+          try {
+            let content: string;
+            if (ctx.path === '__terminal_output__') {
+              content = this._pendingTerminalContent || '(empty)';
+              this._pendingTerminalContent = undefined;
+              enrichedContext.push({ path: ctx.path, name: ctx.name, content });
+            } else if (ctx.path.startsWith('builtin:')) {
+              // Built-in skill
+              const builtinContent = getBuiltinSkillContent(ctx.path);
+              if (builtinContent) {
+                enrichedContext.push({ path: ctx.path, name: ctx.name, content: builtinContent });
+                log(`Read builtin skill: ${ctx.name} (${builtinContent.length} chars)`);
+              }
+            } else if (ctx.path.startsWith('__git_commit__:')) {
+              const commitHash = ctx.path.replace('__git_commit__:', '');
+              content = this._pendingGitContents?.[commitHash] || '(empty)';
+              enrichedContext.push({ path: ctx.path, name: ctx.name, content });
+            } else if (fs.statSync(ctx.path).isDirectory()) {
+              // Recursively read directory contents
+              const files = this.readDirRecursive(ctx.path);
+              for (const file of files) {
+                try {
+                  const fileContent = fs.readFileSync(file.path, 'utf-8');
+                  enrichedContext.push({ path: file.path, name: file.name, content: fileContent });
+                  log(`Read context: ${file.name} (${fileContent.length} chars)`);
+                } catch { /* skip unreadable files */ }
+              }
+            } else {
+              content = fs.readFileSync(ctx.path, 'utf-8');
+              enrichedContext.push({ path: ctx.path, name: ctx.name, content });
+              log(`Read context: ${ctx.name} (${content.length} chars)`);
+            }
+          } catch (err: any) {
+            log(`Failed to read context ${ctx.name}: ${err.message}`);
+          }
+        }
+      }
+      const rawReply = await this.engine.chat(text, temperature, topP, maxTokens, images, enrichedContext);
       // Strip <system-reminder> tags — these are for LLM context only, not for display
       const reply = this.stripSystemReminder(rawReply);
       log(`Response: "${reply.substring(0, 200)}${reply.length > 200 ? '...' : ''}"`);
@@ -731,8 +1175,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       log(`ERROR: ${err.message}`);
       // Clean up error message
       let errorMsg = err.message || 'Unknown error';
-      // Remove system-reminder tags (greedy match)
-      errorMsg = errorMsg.replace(/<system-reminder>[\s\S]*<\/system-reminder>/g, '');
+      // Remove system-reminder tags (non-greedy)
+      errorMsg = errorMsg.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
       // Remove any remaining HTML/XML tags
       errorMsg = errorMsg.replace(/<[^>]+>/g, '');
       // Try to extract message from JSON error
@@ -792,6 +1236,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.engine = undefined;
     log(`Switched to model: ${active?.name || index}`);
+  }
+
+  // ── Permission Management ──
+
+  private handleGetPermissionConfig() {
+    const config = this.engine?.getPermissionConfig() || {};
+    this.postMessage({ type: 'permissionConfig', config });
+  }
+
+  private handleSetPermissionConfig(config: Record<string, string>) {
+    if (this.engine) {
+      this.engine.setPermissionConfig(config as any);
+      log(`Permission config updated: ${JSON.stringify(config)}`);
+    }
+  }
+
+  private handlePermissionResponse(requestId: string, decision: 'allow_once' | 'always_allow' | 'deny') {
+    if (this.engine) {
+      // Find the tool name from the pending request (stored in onViewUpdate handler)
+      const toolName = this._pendingPermissionTool;
+      this.engine.resolvePermission(decision, toolName);
+      log(`Permission decision: ${decision} for ${toolName || 'unknown'}`);
+    }
+  }
+
+  private _pendingPermissionTool = '';
+
+  // ── Command Handlers (called from extension.ts) ──
+
+  public async handleNewSession() {
+    const sm = this.getSessionManager();
+    if (sm) {
+      try {
+        const model = vscode.workspace.getConfiguration('vteCode').get<string>('model', 'unknown');
+        const session = await sm.createSession(undefined, model);
+        this.currentSessionId = session.id;
+        this.chatHistory = [];
+        this.engine?.clearHistory();
+        this.postMessage({ type: 'chatHistory', messages: [] });
+        this.postMessage({ type: 'session:created', session: { id: session.id, name: session.name, tags: [], createdAt: session.createdAt, updatedAt: session.updatedAt, messageCount: 0, model, tokenUsage: { prompt: 0, completion: 0 } } });
+        log(`New session created: ${session.id}`);
+      } catch (err: any) {
+        log(`Failed to create session: ${err.message}`);
+        this.postMessage({ type: 'error', text: `创建会话失败: ${err.message}` });
+      }
+    }
+  }
+
+  public handleClear() {
+    this.engine?.clearHistory();
+    this.chatHistory = [];
+    this.postMessage({ type: 'cleared' });
+    log('History cleared');
   }
 
   private sendConfig() {

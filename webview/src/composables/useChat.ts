@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import { useVsCode } from './useVsCode'
 import type { TokenStatsData } from '../components/TokenStats'
-import type { ImageAttachment } from '../protocol'
+import type { ImageAttachment, ContextAttachment } from '../protocol'
 
 export interface Task {
   id: number
@@ -29,6 +29,7 @@ export interface ChatMessage {
   thinkingText?: string
   toolCalls?: ToolCallEvent[]
   images?: ImageAttachment[]
+  context?: ContextAttachment[]
 }
 
 export interface TaskSnapshotMessage {
@@ -174,13 +175,14 @@ export function useChat(mode: () => string) {
         timestamp: m.timestamp,
         thinkingText: m.thinkingText,
         images: m.images,
+        context: m.context,
         toolCalls: m.toolCalls,
       }))
       nextId = msg.messages.length > 0 ? Math.max(...msg.messages.map((m: any) => m.id)) + 1 : 0
     }
   })
 
-  function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number, images?: ImageAttachment[]) {
+  function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number, images?: ImageAttachment[], context?: ContextAttachment[]) {
     messages.value.push({
       id: nextId++,
       role: 'user',
@@ -188,10 +190,11 @@ export function useChat(mode: () => string) {
       type: 'chat',
       timestamp: new Date().toLocaleTimeString(),
       images,
+      context,
     } as ChatMessage)
     busy.value = true
     turnContentStarted = false
-    send({ type: 'chat', text, model, temperature, topP, maxTokens, images })
+    send({ type: 'chat', text, model, temperature, topP, maxTokens, images, context })
   }
 
   function deleteMessage(id: number) {
@@ -199,11 +202,11 @@ export function useChat(mode: () => string) {
     if (idx !== -1) messages.value.splice(idx, 1)
   }
 
-  function resendMessage(id: number, newText: string, model: string, temperature: number, topP: number, maxTokens: number) {
+  function resendMessage(id: number, newText: string, model: string, temperature: number, topP: number, maxTokens: number, context?: ContextAttachment[]) {
     const idx = messages.value.findIndex(m => m.id === id)
     if (idx === -1) return
     messages.value.splice(idx)
-    sendChat(newText, model, temperature, topP, maxTokens)
+    sendChat(newText, model, temperature, topP, maxTokens, undefined, context)
   }
 
   function clear() {
