@@ -55,7 +55,17 @@
           <div v-else class="session-list">
             <div v-for="session in sessions" :key="session.id" class="session-item" @click="onRestore(session.id)">
               <div class="session-item-main">
-                <div class="session-item-name">{{ session.name }}</div>
+                <div v-if="renamingId === session.id" class="session-rename" @click.stop>
+                  <input
+                    ref="renameInputEl"
+                    v-model="renameValue"
+                    class="session-rename-input"
+                    @keydown.enter="confirmRename"
+                    @keydown.esc="cancelRename"
+                    @blur="confirmRename"
+                  />
+                </div>
+                <div v-else class="session-item-name">{{ session.name }}</div>
                 <div class="session-item-meta">
                   <span>{{ formatDate(session.createdAt) }}</span>
                   <span>{{ session.messageCount }}条消息</span>
@@ -67,6 +77,11 @@
                 <button class="session-item-btn" @click="onExport(session.id)" title="导出">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                </button>
+                <button class="session-item-btn" @click="startRename(session)" title="重命名">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                   </svg>
                 </button>
                 <button class="session-item-btn delete" @click="onDelete(session.id)" title="删除">
@@ -135,6 +150,9 @@ const { success, error: notifyError } = useNotification()
 const searchQuery = ref('')
 const deleteTarget = ref<string | null>(null)
 const showClearAll = ref(false)
+const renamingId = ref<string | null>(null)
+const renameValue = ref('')
+const renameInputEl = ref<HTMLInputElement>()
 
 watch(() => props.visible, (val) => {
   if (val) {
@@ -178,6 +196,28 @@ function cancelDelete() {
 function confirmClearAll() {
   deleteAllSessions()
   showClearAll.value = false
+}
+
+function startRename(session: { id: string; name: string }) {
+  renamingId.value = session.id
+  renameValue.value = session.name
+  setTimeout(() => {
+    renameInputEl.value?.focus()
+    renameInputEl.value?.select()
+  }, 50)
+}
+
+function confirmRename() {
+  if (renamingId.value && renameValue.value.trim()) {
+    renameSession(renamingId.value, renameValue.value.trim())
+    renamingId.value = null
+    renameValue.value = ''
+  }
+}
+
+function cancelRename() {
+  renamingId.value = null
+  renameValue.value = ''
 }
 
 function onExport(id: string) {
@@ -310,6 +350,14 @@ function formatDate(ts: number): string {
 .session-item-name {
   font-size: 14px; font-weight: 500; color: var(--vte-text);
   margin-bottom: 4px;
+}
+.session-rename {
+  margin-bottom: 4px;
+}
+.session-rename-input {
+  width: 100%; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--vte-primary); background: var(--vte-input-bg);
+  color: var(--vte-text); font-size: 14px; font-weight: 500; outline: none;
 }
 .session-item-meta {
   display: flex; gap: 12px; font-size: 12px; color: var(--vte-text-muted);
