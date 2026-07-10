@@ -20,6 +20,10 @@
       </div>
     </div>
     <div v-if="msg.text || msg.role !== 'assistant' || !msg.thinkingPhase" class="mb">
+      <!-- Image attachments -->
+      <div v-if="msg.role === 'user' && msg.images?.length" class="msg-images">
+        <img v-for="(img, idx) in msg.images" :key="idx" :src="img.dataUrl" :alt="img.name" class="msg-image" />
+      </div>
       <ToolCallBlock v-if="msg.role === 'assistant' && msg.toolCalls?.length" :tool-calls="msg.toolCalls" />
       <!-- Error message with special styling -->
       <div v-if="msg.role === 'assistant' && isError" class="mt error-msg">

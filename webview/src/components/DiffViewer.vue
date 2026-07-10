@@ -132,7 +132,7 @@ function parseDiff(raw: string): DiffBlock[] {
         newLine = parseInt(match[2])
         const funcName = match[3]?.trim()
         if (funcName) {
-          current.lines.push({ type: 'header', prefix: ' ', text: rawLine })
+          current.lines.push({ type: 'header', prefix: '', text: funcName })
         }
       }
       continue

@@ -9,6 +9,28 @@
     <span v-if="checkpoints.length > 0" class="cp-badge">{{ checkpoints.length }}</span>
   </button>
 
+  <!-- Confirm dialog (higher z-index than main modal) -->
+  <Teleport to="body">
+    <Transition name="modal">
+      <div v-if="showConfirm" class="cp-overlay cp-overlay-confirm" @click.self="cancelAction">
+        <div class="cp-confirm-dialog">
+          <div class="cp-confirm-title">
+            {{ pendingAction?.type === 'restore' ? '确认恢复？' : '确认删除？' }}
+          </div>
+          <div class="cp-confirm-text">
+            {{ pendingAction?.type === 'restore' ? '恢复后当前状态将被替换，此操作不可撤销。' : '快照是 Git 提交，无法真正删除。此操作仅从列表中移除显示。' }}
+          </div>
+          <div class="cp-confirm-actions">
+            <button class="cp-confirm-btn cancel" @click="cancelAction">取消</button>
+            <button class="cp-confirm-btn confirm" @click="confirmAction">
+              {{ pendingAction?.type === 'restore' ? '恢复' : '确认' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   <!-- Modal -->
   <Teleport to="body">
     <Transition name="modal">
@@ -22,9 +44,6 @@
           </div>
 
           <div class="cp-dialog-body">
-            <!-- Error message -->
-            <div v-if="errorMsg" class="cp-error">{{ errorMsg }}</div>
-
             <!-- Save button -->
             <button class="cp-save-btn" @click="onSave" :disabled="saving">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -74,13 +93,21 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useVsCode } from '../composables/useVsCode'
+import { useNotification } from '../composables/useNotification'
 
 const { send, onMessage } = useVsCode()
+const { success, error: notifyError } = useNotification()
 
 const modalOpen = ref(false)
 const saving = ref(false)
-const errorMsg = ref('')
 const checkpoints = ref<Array<{ id: string; name: string; timestamp: number }>>([])
+const pendingAction = ref<{ type: 'restore' | 'delete'; id: string } | null>(null)
+const showConfirm = ref(false)
+
+// Fetch checkpoints on mount
+onMounted(() => {
+  send({ type: 'listCheckpoints' })
+})
 
 onMessage((msg) => {
   if (msg.type === 'checkpointList') {
@@ -88,15 +115,17 @@ onMessage((msg) => {
   } else if (msg.type === 'checkpointSaved') {
     saving.value = false
     checkpoints.value.unshift(msg.checkpoint)
-    errorMsg.value = ''
+    success('快照已保存')
   } else if (msg.type === 'checkpointRestored') {
     modalOpen.value = false
+    success(`已恢复到快照: ${msg.name}`)
+    // Refresh list after restore
+    send({ type: 'listCheckpoints' })
   } else if (msg.type === 'checkpointDeleted') {
     checkpoints.value = checkpoints.value.filter(cp => cp.id !== msg.checkpointId)
   } else if (msg.type === 'checkpointError') {
-    errorMsg.value = msg.text
     saving.value = false
-    setTimeout(() => errorMsg.value = '', 3000)
+    notifyError(msg.text)
   }
 })
 
@@ -111,15 +140,29 @@ function onSave() {
 }
 
 function onRestore(id: string) {
-  if (confirm('确定要恢复到此 Checkpoint？当前状态将被替换。')) {
-    send({ type: 'restoreCheckpoint', checkpointId: id })
-  }
+  pendingAction.value = { type: 'restore', id }
+  showConfirm.value = true
 }
 
 function onDelete(id: string) {
-  if (confirm('确定要删除此 Checkpoint？')) {
-    send({ type: 'deleteCheckpoint', checkpointId: id })
+  pendingAction.value = { type: 'delete', id }
+  showConfirm.value = true
+}
+
+function confirmAction() {
+  if (!pendingAction.value) return
+  if (pendingAction.value.type === 'restore') {
+    send({ type: 'restoreCheckpoint', checkpointId: pendingAction.value.id })
+  } else {
+    send({ type: 'deleteCheckpoint', checkpointId: pendingAction.value.id })
   }
+  showConfirm.value = false
+  pendingAction.value = null
+}
+
+function cancelAction() {
+  showConfirm.value = false
+  pendingAction.value = null
 }
 
 function formatTime(ts: number): string {
@@ -169,12 +212,6 @@ function formatTime(ts: number): string {
 .cp-dialog-close svg { width: 14px; height: 14px; }
 .cp-dialog-body { padding: 16px 20px 20px; overflow-y: auto; }
 
-.cp-error {
-  padding: 8px 12px; border-radius: 6px; margin-bottom: 12px;
-  background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2);
-  color: #fca5a5; font-size: 12px; text-align: center;
-}
-
 .cp-save-btn {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   width: 100%; padding: 10px; border-radius: 8px; border: 1px dashed rgba(99,102,241,0.3);
@@ -209,10 +246,31 @@ function formatTime(ts: number): string {
 .cp-item-btn.del { border-color: rgba(239,68,68,0.2); color: #ef4444; }
 .cp-item-btn.del:hover { background: rgba(239,68,68,0.1); border-color: #ef4444; }
 
+/* Confirm dialog */
+.cp-overlay-confirm { z-index: 10000; }
+.cp-confirm-dialog {
+  width: 320px; padding: 20px;
+  border-radius: 12px; background: #1e1e2e;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.cp-confirm-title { font-size: 14px; font-weight: 600; color: #e2e8f0; margin-bottom: 8px; }
+.cp-confirm-text { font-size: 12px; color: #94a3b8; margin-bottom: 16px; line-height: 1.5; }
+.cp-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.cp-confirm-btn {
+  padding: 8px 16px; border-radius: 6px; border: none;
+  font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+}
+.cp-confirm-btn.cancel { background: rgba(255,255,255,0.06); color: #94a3b8; }
+.cp-confirm-btn.cancel:hover { background: rgba(255,255,255,0.1); color: #e2e8f0; }
+.cp-confirm-btn.confirm { background: #6366f1; color: #fff; }
+.cp-confirm-btn.confirm:hover { background: #818cf8; }
+
 /* Transition */
 .modal-enter-active { transition: opacity 0.2s ease; }
 .modal-leave-active { transition: opacity 0.15s ease; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
 .modal-enter-active .cp-dialog { animation: dialogIn 0.25s ease; }
+.modal-enter-active .cp-confirm-dialog { animation: dialogIn 0.25s ease; }
 @keyframes dialogIn { from { transform: translateY(12px) scale(0.97); opacity: 0; } }
 </style>

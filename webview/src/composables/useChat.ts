@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { useVsCode } from './useVsCode'
 import type { TokenStatsData } from '../components/TokenStats'
+import type { ImageAttachment } from '../protocol'
 
 export interface Task {
   id: number
@@ -27,6 +28,7 @@ export interface ChatMessage {
   thinkingPhase?: boolean
   thinkingText?: string
   toolCalls?: ToolCallEvent[]
+  images?: ImageAttachment[]
 }
 
 export interface TaskSnapshotMessage {
@@ -171,17 +173,25 @@ export function useChat(mode: () => string) {
         text: m.text,
         timestamp: m.timestamp,
         thinkingText: m.thinkingText,
+        images: m.images,
         toolCalls: m.toolCalls,
       }))
       nextId = msg.messages.length > 0 ? Math.max(...msg.messages.map((m: any) => m.id)) + 1 : 0
     }
   })
 
-  function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number) {
-    messages.value.push({ id: nextId++, role: 'user', text, type: 'chat', timestamp: new Date().toLocaleTimeString() } as ChatMessage)
+  function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number, images?: ImageAttachment[]) {
+    messages.value.push({
+      id: nextId++,
+      role: 'user',
+      text,
+      type: 'chat',
+      timestamp: new Date().toLocaleTimeString(),
+      images,
+    } as ChatMessage)
     busy.value = true
     turnContentStarted = false
-    send({ type: 'chat', text, model, temperature, topP, maxTokens })
+    send({ type: 'chat', text, model, temperature, topP, maxTokens, images })
   }
 
   function deleteMessage(id: number) {

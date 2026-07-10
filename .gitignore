@@ -5,3 +5,4 @@ out/
 .DS_Store
 .mimocode/node_modules/
 .mimocode/.cron-lock
+uni-agent/

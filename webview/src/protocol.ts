@@ -1,11 +1,28 @@
 // Webview -> Extension Host
+export interface ImageAttachment {
+  name: string
+  dataUrl: string
+  mimeType: string
+}
+
 export type WebviewToHostMessage =
-  | { type: 'chat'; text: string; model: string; temperature: number; topP: number; maxTokens: number }
+  | { type: 'chat'; text: string; model: string; temperature: number; topP: number; maxTokens: number; images?: ImageAttachment[] }
   | { type: 'clear' }
   | { type: 'saveConfig'; apiKey: string; apiBase: string; model: string }
   | { type: 'getConfig' }
   | { type: 'setMode'; mode: 'plan' | 'code' }
   | { type: 'setTaskMode'; taskMode: TaskMode }
+  // Session management
+  | { type: 'session:create'; name?: string }
+  | { type: 'session:list' }
+  | { type: 'session:get'; sessionId: string }
+  | { type: 'session:restore'; sessionId: string }
+  | { type: 'session:delete'; sessionId: string }
+  | { type: 'session:rename'; sessionId: string; name: string }
+  | { type: 'session:tag'; sessionId: string; tags: string[] }
+  | { type: 'session:search'; query: string }
+  | { type: 'session:export'; sessionId: string }
+  | { type: 'session:import'; data: string }
 
 export type TaskMode = 'off' | 'llm-auto' | 'plugin-auto'
 
@@ -28,6 +45,41 @@ export type HostToWebviewMessage =
   | { type: 'tool_call'; toolCallId: string; name: string; arguments: Record<string, unknown> }
   | { type: 'tool_result'; toolCallId: string; result: string; elapsed: number }
   | { type: 'tokenStats'; totalPrompt: number; totalCompletion: number; totalTokens: number; totalCost: number; requestCount: number; perModel: Record<string, { tokens: number; cost: number; count: number }>; recent: Array<{ model: string; prompt: number; completion: number; total: number; cost: number }> }
+  // Session management
+  | { type: 'session:list'; sessions: SessionMeta[] }
+  | { type: 'session:created'; session: SessionMeta }
+  | { type: 'session:data'; session: SessionData }
+  | { type: 'session:restored'; sessionId: string }
+  | { type: 'session:deleted'; sessionId: string }
+  | { type: 'session:renamed'; sessionId: string; name: string }
+  | { type: 'session:tagged'; sessionId: string; tags: string[] }
+  | { type: 'session:searchResult'; sessions: SessionMeta[] }
+  | { type: 'session:exported'; sessionId: string; data: string }
+  | { type: 'session:imported'; session: SessionMeta }
+  | { type: 'session:error'; text: string }
+
+export interface SessionMeta {
+  id: string
+  name: string
+  summary?: string
+  tags: string[]
+  createdAt: number
+  updatedAt: number
+  messageCount: number
+  model: string
+  tokenUsage: { prompt: number; completion: number }
+  thumbnail?: string
+}
+
+export interface SessionData {
+  metadata: SessionMeta
+  messages: Array<{
+    id: number
+    role: 'user' | 'assistant' | 'error'
+    text: string
+    timestamp: string
+  }>
+}
 
 export interface ModelOption {
   value: string

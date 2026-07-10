@@ -6,7 +6,9 @@ import { getAllTasks } from '../agent/tasks';
 import { getSessionStats, getRecentRecords } from '../agent/token-tracker';
 import { VTEContextManager } from '../context/manager';
 import { runGrayBoxTests, formatTestResults } from '../agent/test-runner';
-// Checkpoint is now handled by shadow-git, no need for JSON import
+import { ShadowGit } from '../agent/shadow-git';
+import { SessionManager } from '../agent/session-manager';
+import { ChatMessage } from '../agent/session-types';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -20,11 +22,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private panel?: vscode.WebviewPanel;
   private engine?: AgentEngine;
+  private shadowGit?: ShadowGit;
+  private sessionManager?: SessionManager;
+  private currentSessionId?: string;
   private mode: AgentMode = 'code';
   // Track chat history for cross-webview sync
-  private chatHistory: Array<{ id: number; role: 'user' | 'assistant' | 'error'; text: string; timestamp: string; thinkingText?: string }> = [];
+  private chatHistory: Array<{
+    id: number;
+    role: 'user' | 'assistant' | 'error';
+    text: string;
+    timestamp: string;
+    thinkingText?: string;
+    images?: Array<{ name: string; dataUrl: string; mimeType: string }>;
+    toolCalls?: Array<{
+      id: string;
+      name: string;
+      arguments: Record<string, unknown>;
+      status: 'pending' | 'running' | 'done' | 'error';
+      result?: string;
+      elapsed?: number;
+    }>;
+  }> = [];
   private nextMsgId = 0;
   private pendingThinking = '';
+  private pendingToolCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    status: 'pending' | 'running' | 'done' | 'error';
+    result?: string;
+    elapsed?: number;
+  }> = [];
 
   constructor(private readonly extensionUri: vscode.Uri) {
     outputChannel = vscode.window.createOutputChannel('VTE Agent');
@@ -108,8 +136,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       log(`Received: ${message.type}`);
       switch (message.type) {
         case 'chat':
-          this.trackUserMessage(message.text);
-          await this.handleChat(message.text, message.model, message.temperature, message.topP, message.maxTokens);
+          this.trackUserMessage(message.text, message.images);
+          await this.handleChat(message.text, message.model, message.temperature, message.topP, message.maxTokens, message.images);
           break;
         case 'clear':
           this.engine?.clearHistory();
@@ -160,16 +188,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'listCheckpoints':
           this.listCheckpoints();
           break;
+        // Session management
+        case 'session:create':
+          await this.createSession(message.name);
+          break;
+        case 'session:list':
+          await this.listSessions();
+          break;
+        case 'session:get':
+          await this.getSession(message.sessionId);
+          break;
+        case 'session:restore':
+          await this.restoreSession(message.sessionId);
+          break;
+        case 'session:delete':
+          await this.deleteSession(message.sessionId);
+          break;
+        case 'session:rename':
+          await this.renameSession(message.sessionId, message.name);
+          break;
+        case 'session:tag':
+          await this.tagSession(message.sessionId, message.tags);
+          break;
+        case 'session:search':
+          await this.searchSessions(message.query);
+          break;
+        case 'session:export':
+          await this.exportSession(message.sessionId);
+          break;
+        case 'session:import':
+          await this.importSession(message.data);
+          break;
       }
     });
   }
 
-  private trackUserMessage(text: string) {
+  private trackUserMessage(text: string, images?: Array<{ name: string; dataUrl: string; mimeType: string }>) {
     this.chatHistory.push({
       id: this.nextMsgId++,
       role: 'user',
       text,
       timestamp: new Date().toLocaleTimeString(),
+      images,
     });
   }
 
@@ -180,8 +240,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text,
       timestamp: new Date().toLocaleTimeString(),
       thinkingText: this.pendingThinking || undefined,
+      toolCalls: this.pendingToolCalls.length > 0 ? [...this.pendingToolCalls] : undefined,
     });
     this.pendingThinking = '';
+    this.pendingToolCalls = [];
   }
 
   private feedbackFile = '';
@@ -277,38 +339,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async restoreCheckpoint(commitHash: string) {
-    if (!this.engine) {
-      this.postMessage({ type: 'checkpointError', text: '没有活跃会话，无法恢复' });
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      this.postMessage({ type: 'checkpointError', text: '没有打开的工作区' });
       return;
     }
 
+    log(`Restoring checkpoint: ${commitHash}`);
+
+    // Use engine's shadow-git if available, otherwise create standalone instance
+    let shadowGit: ShadowGit | undefined = this.engine?.getShadowGit();
+    if (!shadowGit) {
+      shadowGit = new ShadowGit(workspaceRoot);
+    }
+
     try {
-      const success = this.engine.restoreCheckpoint(commitHash);
-      if (success) {
+      const restoredFiles = shadowGit.restoreCheckpoint(commitHash);
+      log(`Restored files: ${restoredFiles.length} - ${restoredFiles.join(', ')}`);
+
+      if (restoredFiles.length > 0) {
         this.postMessage({ type: 'checkpointRestored', name: commitHash.substring(0, 7) });
-        log(`Checkpoint restored: ${commitHash.substring(0, 7)}`);
+        log(`Checkpoint restored: ${commitHash.substring(0, 7)} (${restoredFiles.length} files)`);
       } else {
-        this.postMessage({ type: 'checkpointError', text: 'Failed to restore checkpoint' });
+        this.postMessage({ type: 'checkpointError', text: '没有找到可恢复的文件' });
       }
     } catch (err: any) {
       log(`Failed to restore checkpoint: ${err.message}`);
-      this.postMessage({ type: 'checkpointError', text: `Failed to restore: ${err.message}` });
+      this.postMessage({ type: 'checkpointError', text: `恢复失败: ${err.message}` });
     }
   }
 
   private async deleteCheckpoint(commitHash: string) {
-    // Git commits are immutable, can't really delete
-    this.postMessage({ type: 'checkpointError', text: 'Git commits are immutable and cannot be deleted.' });
+    // Git commits are immutable, but we can try to remove the reference
+    // For now, just inform the user
+    this.postMessage({ type: 'checkpointError', text: '快照是 Git 提交，无法删除。旧的快照会自动清理。' });
   }
 
   private listCheckpoints() {
-    if (!this.engine) {
-      this.postMessage({ type: 'checkpointList', checkpoints: [] });
-      return;
+    // Try to get shadow-git from engine or use standalone instance
+    let shadowGit: ShadowGit | undefined = this.engine?.getShadowGit();
+
+    if (!shadowGit) {
+      // Create standalone shadow-git instance for listing checkpoints
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        this.postMessage({ type: 'checkpointList', checkpoints: [] });
+        return;
+      }
+      shadowGit = new ShadowGit(workspaceRoot);
     }
 
     try {
-      const shadowGit = this.engine.getShadowGit();
       const commits = shadowGit.log(20);
       const checkpoints = commits
         .filter((c: any) => c.message.startsWith('Checkpoint:'))
@@ -322,6 +403,234 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (err: any) {
       log(`Failed to list checkpoints: ${err.message}`);
       this.postMessage({ type: 'checkpointList', checkpoints: [] });
+    }
+  }
+
+  // ── Session Management Methods ──
+
+  private getSessionManager(): SessionManager | undefined {
+    if (this.sessionManager) return this.sessionManager;
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) return undefined;
+
+    this.sessionManager = new SessionManager(workspaceRoot);
+    return this.sessionManager;
+  }
+
+  private async createSession(name?: string) {
+    const sm = this.getSessionManager();
+    if (!sm) {
+      this.postMessage({ type: 'session:error', text: '没有打开的工作区' });
+      return;
+    }
+
+    try {
+      // Get current model from config
+      const config = vscode.workspace.getConfiguration('vteCode');
+      const model = config.get<string>('model', 'unknown');
+
+      const session = await sm.createSession(name, model);
+      this.currentSessionId = session.id;
+      this.postMessage({ type: 'session:created', session });
+      log(`Session created: ${session.id} (model: ${model})`);
+    } catch (err: any) {
+      log(`Failed to create session: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `创建失败: ${err.message}` });
+    }
+  }
+
+  private async listSessions() {
+    const sm = this.getSessionManager();
+    if (!sm) {
+      this.postMessage({ type: 'session:list', sessions: [] });
+      return;
+    }
+
+    try {
+      const sessions = await sm.listSessions();
+      this.postMessage({ type: 'session:list', sessions });
+    } catch (err: any) {
+      log(`Failed to list sessions: ${err.message}`);
+      this.postMessage({ type: 'session:list', sessions: [] });
+    }
+  }
+
+  private async getSession(sessionId: string) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      const session = await sm.getSession(sessionId);
+      if (session) {
+        this.postMessage({ type: 'session:data', session });
+      } else {
+        this.postMessage({ type: 'session:error', text: '会话不存在' });
+      }
+    } catch (err: any) {
+      log(`Failed to get session: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `获取失败: ${err.message}` });
+    }
+  }
+
+  private async restoreSession(sessionId: string) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      const session = await sm.getSession(sessionId);
+      if (!session) {
+        this.postMessage({ type: 'session:error', text: '会话不存在' });
+        return;
+      }
+
+      // Restore chat history
+      this.chatHistory = session.messages.map(m => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        timestamp: m.timestamp,
+        thinkingText: m.thinkingText,
+        images: m.images,
+        toolCalls: m.toolCalls,
+      }));
+      this.nextMsgId = this.chatHistory.length > 0
+        ? Math.max(...this.chatHistory.map(m => m.id)) + 1
+        : 0;
+
+      // Restore engine state if available
+      if (this.engine && session.metadata.checkpointId) {
+        this.engine.restoreCheckpoint(session.metadata.checkpointId);
+      }
+
+      this.currentSessionId = sessionId;
+      this.postMessage({ type: 'session:restored', sessionId });
+      this.postMessage({ type: 'chatHistory', messages: this.chatHistory });
+      log(`Session restored: ${sessionId}`);
+    } catch (err: any) {
+      log(`Failed to restore session: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `恢复失败: ${err.message}` });
+    }
+  }
+
+  private async deleteSession(sessionId: string) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      await sm.deleteSession(sessionId);
+      if (this.currentSessionId === sessionId) {
+        this.currentSessionId = undefined;
+      }
+      this.postMessage({ type: 'session:deleted', sessionId });
+      log(`Session deleted: ${sessionId}`);
+    } catch (err: any) {
+      log(`Failed to delete session: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `删除失败: ${err.message}` });
+    }
+  }
+
+  private async renameSession(sessionId: string, name: string) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      await sm.updateSession(sessionId, { name });
+      this.postMessage({ type: 'session:renamed', sessionId, name });
+    } catch (err: any) {
+      log(`Failed to rename session: ${err.message}`);
+    }
+  }
+
+  private async tagSession(sessionId: string, tags: string[]) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      await sm.updateSession(sessionId, { tags });
+      this.postMessage({ type: 'session:tagged', sessionId, tags });
+    } catch (err: any) {
+      log(`Failed to tag session: ${err.message}`);
+    }
+  }
+
+  private async searchSessions(query: string) {
+    const sm = this.getSessionManager();
+    if (!sm) {
+      this.postMessage({ type: 'session:searchResult', sessions: [] });
+      return;
+    }
+
+    try {
+      const sessions = await sm.searchSessions(query);
+      this.postMessage({ type: 'session:searchResult', sessions });
+    } catch (err: any) {
+      log(`Failed to search sessions: ${err.message}`);
+      this.postMessage({ type: 'session:searchResult', sessions: [] });
+    }
+  }
+
+  private async exportSession(sessionId: string) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      const data = await sm.exportSession(sessionId);
+      this.postMessage({ type: 'session:exported', sessionId, data });
+      log(`Session exported: ${sessionId}`);
+    } catch (err: any) {
+      log(`Failed to export session: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `导出失败: ${err.message}` });
+    }
+  }
+
+  private async importSession(data: string) {
+    const sm = this.getSessionManager();
+    if (!sm) return;
+
+    try {
+      const session = await sm.importSession(data);
+      this.postMessage({ type: 'session:imported', session });
+      log(`Session imported: ${session.id}`);
+    } catch (err: any) {
+      log(`Failed to import session: ${err.message}`);
+      this.postMessage({ type: 'session:error', text: `导入失败: ${err.message}` });
+    }
+  }
+
+  private async autoSaveSession() {
+    const sm = this.getSessionManager();
+    if (!sm || !this.currentSessionId) return;
+
+    try {
+      // Convert chatHistory to ChatMessage format
+      const messages: ChatMessage[] = this.chatHistory.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant' | 'error',
+        text: m.text,
+        timestamp: m.timestamp,
+        thinkingText: m.thinkingText,
+        images: m.images,
+        toolCalls: m.toolCalls,
+      }));
+
+      // Get token usage
+      const stats = getSessionStats();
+
+      // Get model from config
+      const config = vscode.workspace.getConfiguration('vteCode');
+      const model = config.get<string>('model', 'unknown');
+
+      await sm.autoSave(this.currentSessionId, {
+        messages,
+        model,
+        tokenUsage: {
+          prompt: stats.totalPrompt,
+          completion: stats.totalCompletion,
+        },
+      });
+    } catch (err: any) {
+      log(`Auto-save failed: ${err.message}`);
     }
   }
 
@@ -341,8 +650,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return html;
   }
 
-  private async handleChat(text: string, model?: string, temperature?: number, topP?: number, maxTokens?: number) {
-    log(`Chat: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}" | model=${model} temp=${temperature} topP=${topP} maxTokens=${maxTokens}`);
+  private async handleChat(text: string, model?: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>) {
+    log(`Chat: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}" | model=${model} temp=${temperature} topP=${topP} maxTokens=${maxTokens} images=${images?.length || 0}`);
+
+    // Auto-create session if none exists
+    if (!this.currentSessionId) {
+      const sm = this.getSessionManager();
+      if (sm) {
+        const sessionModel = model || vscode.workspace.getConfiguration('vteCode').get<string>('model', 'unknown');
+        const session = await sm.createSession(undefined, sessionModel);
+        this.currentSessionId = session.id;
+        log(`Auto-created session: ${session.id}`);
+      }
+    }
 
     if (!this.engine) {
       const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -372,7 +692,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       this.engine.onViewUpdate = (update) => {
         if (update.type === 'thinking_chunk') {
-          this.pendingThinking += update.text;
+          this.pendingThinking += update.text as string;
+        } else if (update.type === 'tool_call') {
+          this.pendingToolCalls.push({
+            id: update.toolCallId as string,
+            name: update.name as string,
+            arguments: update.arguments as Record<string, unknown>,
+            status: 'running',
+          });
+        } else if (update.type === 'tool_result') {
+          const tc = this.pendingToolCalls.find(t => t.id === (update.toolCallId as string));
+          if (tc) {
+            tc.status = (update.elapsed as number) < 0 ? 'error' : 'done';
+            tc.result = update.result as string;
+            tc.elapsed = Math.abs(update.elapsed as number);
+          }
         }
         this.postMessage(update);
       };
@@ -383,7 +717,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'thinking' });
     try {
       log('Calling LLM...');
-      const rawReply = await this.engine.chat(text, temperature, topP, maxTokens);
+      const rawReply = await this.engine.chat(text, temperature, topP, maxTokens, images);
       // Strip <system-reminder> tags — these are for LLM context only, not for display
       const reply = this.stripSystemReminder(rawReply);
       log(`Response: "${reply.substring(0, 200)}${reply.length > 200 ? '...' : ''}"`);
@@ -391,6 +725,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'response', text: reply });
       this.pushTasks();
       this.pushTokenStats();
+      // Auto-save session
+      await this.autoSaveSession();
     } catch (err: any) {
       log(`ERROR: ${err.message}`);
       // Clean up error message

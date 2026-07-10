@@ -163,7 +163,7 @@ export class AgentEngine {
     return this.mode;
   }
 
-  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number): Promise<string> {
+  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>): Promise<string> {
     // Create abort controller for this request
     this.abortController = new AbortController();
 
@@ -184,7 +184,19 @@ export class AgentEngine {
       }
     }
 
-    this.messages.push({ role: 'user', content: userMessage });
+    // Build user message content (text + images)
+    let userContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }> = userMessage;
+    if (images && images.length > 0) {
+      userContent = [
+        { type: 'text', text: userMessage },
+        ...images.map(img => ({
+          type: 'image_url' as const,
+          image_url: { url: img.dataUrl },
+        })),
+      ];
+    }
+
+    this.messages.push({ role: 'user', content: userContent as string });
 
     // Build system prompt using template engine
     const customInstructions = [
@@ -277,12 +289,18 @@ export class AgentEngine {
   }
 
   private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {
+    // Build API messages with proper content format
     const apiMessages = [
       { role: 'system', content: systemContent },
-      ...this.messages.map(m => ({
-        role: m.role as any,
-        content: m.content,
-      })),
+      ...this.messages.map(m => {
+        // Handle multimodal content (text + images)
+        const content = m.content;
+        if (typeof content === 'string') {
+          return { role: m.role, content };
+        }
+        // Already multimodal format
+        return { role: m.role, content };
+      }),
     ];
 
     const request: LLMRequest = {

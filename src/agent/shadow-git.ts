@@ -4,6 +4,7 @@
  */
 
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -41,14 +42,7 @@ export class ShadowGit {
   }
 
   private hashWorkspace(workspace: string): string {
-    // Simple hash for workspace path
-    let hash = 0
-    for (let i = 0; i < workspace.length; i++) {
-      const char = workspace.charCodeAt(i)
-      hash = ((hash << 5) - hash) + char
-      hash = hash & hash // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(36)
+    return createHash('sha256').update(workspace).digest('hex').slice(0, 12)
   }
 
   /**
@@ -164,8 +158,18 @@ __pycache__/
       // Stage all changes
       this.exec('git add -A')
 
-      // Create commit
-      const commitResult = this.exec(`git commit -m "Checkpoint: ${name}" --allow-empty`)
+      // Check if there are changes to commit
+      try {
+        this.exec('git diff --cached --quiet')
+        // If no changes, git diff --cached --quiet exits with 0 (no changes)
+        console.log(`[VTE] Shadow git: no changes to commit for checkpoint`)
+        return null
+      } catch {
+        // git diff --cached --quiet exits with 1 if there are changes
+      }
+
+      // Create commit (without --allow-empty)
+      const commitResult = this.exec(`git commit -m "Checkpoint: ${name}"`)
       const hash = this.exec('git rev-parse HEAD')
 
       // Create tag on this commit
@@ -280,21 +284,70 @@ __pycache__/
   }
 
   /**
-   * Restore all files from a checkpoint tag
+   * Restore all files from a checkpoint (commit hash or tag name)
    */
-  restoreCheckpoint(tagName: string): string[] {
+  restoreCheckpoint(commitHashOrTag: string): string[] {
     this.init()
     const restored: string[] = []
 
-    try {
-      // Get list of changed files at this tag
-      const output = this.exec(`git diff --name-only ${tagName}~1 ${tagName} 2>/dev/null || git ls-tree --name-only -r ${tagName}`)
-      const files = output.split('\n').filter(Boolean)
+    console.log(`[VTE] Restoring from: ${commitHashOrTag}`)
 
+    try {
+      // Get list of changed files at this commit/tag
+      let files: string[] = []
+
+      // First try: get files changed in this commit
+      try {
+        const output = this.exec(`git diff --name-only ${commitHashOrTag}~1 ${commitHashOrTag} 2>/dev/null`)
+        console.log(`[VTE] Diff output: ${output}`)
+        files = output.split('\n').filter(Boolean)
+      } catch (err) {
+        console.log(`[VTE] Diff with parent failed: ${err}`)
+      }
+
+      // If no files changed (empty commit), try getting all files from the commit tree
+      if (files.length === 0) {
+        console.log(`[VTE] No files in diff, trying ls-tree`)
+        try {
+          const output = this.exec(`git ls-tree --name-only -r ${commitHashOrTag}`)
+          console.log(`[VTE] ls-tree output: ${output}`)
+          files = output.split('\n').filter(Boolean)
+        } catch (err) {
+          console.log(`[VTE] ls-tree failed: ${err}`)
+        }
+      }
+
+      // If still no files, try restoring from the parent commit
+      if (files.length === 0) {
+        console.log(`[VTE] Still no files, trying parent commit`)
+        try {
+          const parentHash = this.exec(`git rev-parse ${commitHashOrTag}~1`).trim()
+          console.log(`[VTE] Parent commit: ${parentHash}`)
+          const output = this.exec(`git diff --name-only ${parentHash}~1 ${parentHash} 2>/dev/null`)
+          console.log(`[VTE] Parent diff output: ${output}`)
+          files = output.split('\n').filter(Boolean)
+          // Use parent commit for file content
+          if (files.length > 0) {
+            commitHashOrTag = parentHash
+          }
+        } catch (err) {
+          console.log(`[VTE] Parent commit failed: ${err}`)
+        }
+      }
+
+      console.log(`[VTE] Files to restore: ${files.length} - ${files.join(', ')}`)
+
+      // Restore each file
       for (const file of files) {
         const fullPath = path.join(this.workspaceRoot, file)
-        if (this.restoreFile(fullPath, tagName)) {
+        try {
+          // Get file content from the checkpoint
+          const content = this.exec(`git show ${commitHashOrTag}:${file}`)
+          fs.writeFileSync(fullPath, content, 'utf-8')
           restored.push(file)
+          console.log(`[VTE] Restored: ${file}`)
+        } catch (err) {
+          console.warn(`[VTE] Failed to restore file: ${file} - ${err}`)
         }
       }
     } catch (err: any) {
