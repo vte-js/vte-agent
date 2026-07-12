@@ -30,6 +30,16 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
       </VTooltip>
+      <VTooltip text="Agent 仪表盘" pos="top">
+        <button class="hdr-btn" :class="{ active: dashboardVisible }" @click="$emit('toggleDashboard')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </button>
+      </VTooltip>
+      <VTooltip text="工单面板" pos="top">
+        <button class="hdr-btn" :class="{ active: workBoardVisible }" @click="$emit('toggleWorkBoard')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+        </button>
+      </VTooltip>
     </div>
   </div>
 </template>
@@ -38,11 +48,18 @@
 import VTooltip from './VTooltip.vue'
 import AgentAvatar from './AgentAvatar.vue'
 
+defineProps<{
+  dashboardVisible?: boolean
+  workBoardVisible?: boolean
+}>()
+
 defineEmits<{
   openConfig: []
   openSessions: []
   openSkills: []
   newSession: []
   clear: []
+  toggleDashboard: []
+  toggleWorkBoard: []
 }>()
 </script>

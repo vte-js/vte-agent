@@ -1,17 +1,77 @@
 <template>
   <NotificationManager />
   <div class="main-area" :class="{ hidden: config.configVisible.value || sessionsVisible }">
-  <MessageList
-    :messages="chat.messages.value"
-    :mode="mode.mode.value"
-    :tool-tick="chat.toolUpdateTick.value"
-    @execute-plan="onExecutePlan"
+    <!-- Multi-agent toggle bar -->
+    <div class="agent-toggle-bar">
+      <button class="toggle-btn" :class="{ active: agentDashboardVisible }" @click="agentDashboardVisible = !agentDashboardVisible">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <span>Agent</span>
+      </button>
+      <button class="toggle-btn" :class="{ active: workOrderBoardVisible }" @click="workOrderBoardVisible = !workOrderBoardVisible">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+        <span>工单</span>
+      </button>
+    </div>
+    <!-- Agent Dashboard (toggleable) -->
+    <AgentDashboard
+      v-if="agentDashboardVisible"
+      :agents="multiAgent.agents.value"
+      :stats="multiAgent.stats.value"
+      :selected-agent-id="multiAgent.activeAgentId.value"
+      :scheduler-running="false"
+      :global-config="{ model: config.model.value, apiKey: config.apiKey.value, apiBase: config.apiBase.value }"
+      @create-agent="(roleId, agentConfig) => multiAgent.createAgentWithConfig(roleId, agentConfig)"
+      @start-scheduler="multiAgent.startScheduler()"
+      @select-agent="multiAgent.selectAgent"
+    />
+    <!-- Work Order Board (toggleable) -->
+    <WorkOrderBoard
+      v-if="workOrderBoardVisible"
+      :orders="multiAgent.workOrders.value"
+      @create-order="multiAgent.createWorkOrder({ title: '新任务', requiredRole: 'dev' })"
+    />
+    <!-- Main content area with optional agent conversation sidebar -->
+    <div class="main-content-row" :class="{ 'has-sidebar': multiAgent.activeAgentId.value }">
+      <MessageList
+      :messages="chat.messages.value"
+      :mode="mode.mode.value"
+      :tool-tick="chat.toolUpdateTick.value"
+      @execute-plan="onExecutePlan"
     @delete-message="chat.deleteMessage"
     @start-edit="(text, id, ctx) => { editRef = text; editContext = ctx || []; editingMessageId = id }"
     @feedback="onFeedback"
-  />
+    />
+    <!-- Agent Conversation Sidebar -->
+    <AgentConversation
+      v-if="multiAgent.activeAgentId.value"
+      :agent="multiAgent.agents.value.find(a => a.id === multiAgent.activeAgentId.value) || null"
+      :history="multiAgent.agents.value.find(a => a.id === multiAgent.activeAgentId.value)?.conversationHistory || []"
+      @close="multiAgent.activeAgentId.value = null"
+      @send-message="(text) => multiAgent.sendAgentMessage(multiAgent.activeAgentId.value!, text)"
+    />
+    </div>
+    <!-- Input area (hidden when agent conversation is active) -->
+    <InputArea
+      v-if="!multiAgent.activeAgentId.value"
+      :token-stats="chat.tokenStats.value"
+      :busy="chat.busy.value"
+      :edit-ref="editRef"
+      :edit-context="editContext"
+      :models="config.models.value"
+      :active-model-index="config.activeModelIndex.value"
+      :reasoning-level="config.reasoningLevel.value"
+      :next-step-suggestion="chat.nextStepSuggestion.value"
+      @send="onSend"
+      @stop="onStop"
+      @toggle-token="toggleTokenPanel"
+      @cancel-edit="() => { editRef = ''; editContext = []; editingMessageId = null }"
+      @select-model="config.selectModel"
+      @save-model="onSaveModel"
+      @delete-model="onDeleteModel"
+      @update:reasoning-level="config.setReasoningLevel"
+      @open-lsp="lspPanelVisible = true"
+    />
   </div>
-  <!-- Config panel -->
   <ConfigPanel
     :visible="config.configVisible.value"
     :models="config.models.value"
@@ -47,25 +107,6 @@
     @restore="onSessionRestore"
   />
   <TokenStatsPanel :stats="chat.tokenStats.value" :expanded="tokenPanelOpen" />
-  <InputArea
-    :token-stats="chat.tokenStats.value"
-    :busy="chat.busy.value"
-    :edit-ref="editRef"
-    :edit-context="editContext"
-    :models="config.models.value"
-    :active-model-index="config.activeModelIndex.value"
-    :reasoning-level="config.reasoningLevel.value"
-    :next-step-suggestion="chat.nextStepSuggestion.value"
-    @send="onSend"
-    @stop="onStop"
-    @toggle-token="toggleTokenPanel"
-    @cancel-edit="() => { editRef = ''; editContext = []; editingMessageId = null }"
-    @select-model="config.selectModel"
-    @save-model="onSaveModel"
-    @delete-model="onDeleteModel"
-    @update:reasoning-level="config.setReasoningLevel"
-    @open-lsp="lspPanelVisible = true"
-  />
   <SkillsPanel :visible="skillsVisible" @close="skillsVisible = false" />
   <LspControlPanel
     :visible="lspPanelVisible"
@@ -119,10 +160,14 @@ import AuthorizationDialog from './components/AuthorizationDialog.vue'
 import QuestionDialog from './components/QuestionDialog.vue'
 import LspControlPanel from './components/LspControlPanel.vue'
 import LspConfigEditor from './components/LspConfigEditor.vue'
+import AgentDashboard from './components/AgentDashboard.vue'
+import WorkOrderBoard from './components/WorkOrderBoard.vue'
+import AgentConversation from './components/AgentConversation.vue'
 import { useChat } from './composables/useChat'
 import { useMode } from './composables/useMode'
 import { useConfig } from './composables/useConfig'
 import { useTaskMode } from './composables/useTaskMode'
+import { useMultiAgent } from './composables/useMultiAgent'
 import { useVsCode } from './composables/useVsCode'
 import { useNotification } from './composables/useNotification'
 import type { TaskMode } from './protocol'
@@ -131,9 +176,12 @@ const mode = useMode()
 const config = useConfig()
 const taskMode = useTaskMode()
 const chat = useChat(() => mode.mode.value)
+const multiAgent = useMultiAgent()
 
 const sessionsVisible = ref(false)
 const skillsVisible = ref(false)
+const agentDashboardVisible = ref(false)
+const workOrderBoardVisible = ref(false)
 const tokenPanelOpen = ref(false)
 const editRef = ref('')
 const editContext = ref<import('./protocol').ContextAttachment[]>([])

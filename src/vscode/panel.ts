@@ -13,6 +13,11 @@ import { ChatMessage } from '../agent/session-types';
 import { getCodeIntelligenceService, getConfigurationResolver } from './lsp';
 import { setHost, VSCodeHostAdapter, VSCodeMessaging } from '../host';
 import { registerTools } from '../core/registry';
+import { AgentPool, AgentInstance } from '../agent/agent-pool';
+import { WorkOrderPool, WorkOrder } from '../agent/work-order';
+import { Scheduler, ScheduleConfig } from '../agent/scheduler';
+import { AgentCommunication } from '../agent/agent-communication';
+import { BUILTIN_ROLES, AgentRole } from '../agent/agent-role';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -31,6 +36,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private currentSessionId?: string;
   private mode: AgentMode = 'code';
   private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
+  // Multi-agent state
+  private agentPool?: AgentPool;
+  private workOrderPool?: WorkOrderPool;
+  private scheduler?: Scheduler;
+  private agentCommunication?: AgentCommunication;
   // Track chat history for cross-webview sync
   private chatHistory: Array<{
     id: number;
@@ -312,6 +322,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'skills:openPanel':
           this.postMessage({ type: 'skills:openPanel' });
+          break;
+        // Multi-agent management
+        case 'multiAgent:createAgent':
+          this.handleCreateAgent(message.roleId, message.model, message.apiKey, message.apiBase);
+          break;
+        case 'multiAgent:createOrder':
+          this.handleCreateOrder(message.title, message.description, message.requiredRole, message.dependencies);
+          break;
+        case 'multiAgent:startScheduler':
+          this.handleStartScheduler(message.mode);
+          break;
+        case 'multiAgent:stopScheduler':
+          this.handleStopScheduler();
+          break;
+        case 'multiAgent:getConversation':
+          this.handleGetConversation(message.agentId);
+          break;
+        case 'multiAgent:stopAll':
+          this.handleStopAllAgents();
+          break;
+        case 'multiAgent:sendMessage':
+          this.handleAgentMessage(message.from, message.to, message.type, message.content);
           break;
       }
       } catch (err: any) {
@@ -1750,5 +1782,174 @@ Example usage here
       log(`Test error: ${err.message}`);
       this.postMessage({ type: 'error', text: `Test error: ${err.message}` });
     }
+  }
+
+  // ── Multi-Agent Management ──
+
+  private initMultiAgent() {
+    if (this.agentPool) return; // Already initialized
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+    const messaging = new VSCodeMessaging();
+    const host = new VSCodeHostAdapter(messaging);
+
+    this.workOrderPool = new WorkOrderPool();
+    this.agentCommunication = new AgentCommunication();
+    this.agentPool = new AgentPool(host, this.workOrderPool, this.agentCommunication);
+
+    // Initialize agent pool with communication
+    this.agentPool = new AgentPool(host, this.workOrderPool, this.agentCommunication);
+
+    // Set up scheduler with default config
+    const scheduleConfig: ScheduleConfig = {
+      mode: 'pool',
+      maxConcurrent: 5,
+      autoAssign: true,
+    };
+    this.scheduler = new Scheduler(this.agentPool, this.workOrderPool, scheduleConfig);
+
+    // Forward agent updates to webview
+    this.agentPool.onAgentUpdate = (agentId, update) => {
+      this.postMessage({ type: 'multiAgent:agentUpdate', agentId, update });
+      this.pushAgentStatuses();
+    };
+
+    // Forward work order events to webview
+    this.workOrderPool.onEvent((event) => {
+      this.pushWorkOrders();
+    });
+
+    // Forward communication messages to webview
+    this.agentCommunication.onBroadcast((msg) => {
+      this.postMessage({
+        type: 'multiAgent:agentMessage',
+        agentId: msg.from,
+        message: {
+          id: Date.now(),
+          role: 'system',
+          text: `[${msg.from}] ${msg.type}: ${msg.content}`,
+          timestamp: msg.timestamp,
+        },
+      });
+    });
+
+    log('Multi-agent system initialized');
+  }
+
+  private handleCreateAgent(roleId: string, model?: string, apiKey?: string, apiBase?: string) {
+    this.initMultiAgent();
+    if (!this.agentPool) return;
+
+    const role = BUILTIN_ROLES.find(r => r.id === roleId);
+    if (!role) {
+      this.postMessage({ type: 'error', text: `Unknown role: ${roleId}` });
+      return;
+    }
+
+    // Use provided config, fallback to global config
+    const config = vscode.workspace.getConfiguration('vteCode');
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+
+    const agent = this.agentPool.createAgent(role, {
+      model: model || config.get<string>('model', 'gpt-4'),
+      apiKey: apiKey || config.get<string>('apiKey', ''),
+      apiBase: apiBase || config.get<string>('apiBase', 'https://api.openai.com/v1'),
+      workspaceRoot,
+    });
+
+    const agentApiKey = apiKey || config.get<string>('apiKey', '');
+    if (!agentApiKey) {
+      this.postMessage({ type: 'toast', level: 'warning', text: `${role.name} 已创建，但未配置 API Key。请在设置中配置。` });
+    } else {
+      this.postMessage({ type: 'toast', level: 'success', text: `${role.name} 已创建 (${agent.id})` });
+    }
+
+    log(`Created agent: ${agent.id} (${role.name})`);
+    this.pushAgentStatuses();
+  }
+
+  private handleCreateOrder(title: string, description?: string, requiredRole?: string, dependencies?: string[], priority?: string, timeoutMs?: number) {
+    this.initMultiAgent();
+    if (!this.workOrderPool) return;
+
+    const order = this.workOrderPool.create({
+      title,
+      description,
+      requiredRole,
+      dependencies,
+      priority: priority as any || 'normal',
+      timeoutMs,
+    });
+    log(`Created work order: ${order.id} (${title})`);
+    this.postMessage({ type: 'toast', level: 'info', text: `工单已创建: ${title}` });
+    this.pushWorkOrders();
+
+    // Auto-schedule if scheduler is running
+    if (this.scheduler) {
+      this.scheduler.start();
+    }
+  }
+
+  private handleStartScheduler(mode?: string) {
+    this.initMultiAgent();
+    if (!this.scheduler) return;
+
+    if (mode) {
+      (this.scheduler as any).config.mode = mode;
+    }
+    this.scheduler.start();
+    const modeLabel = mode || 'pool';
+    this.postMessage({ type: 'toast', level: 'success', text: `调度器已启动 (${modeLabel} 模式)` });
+    log(`Scheduler started in mode: ${modeLabel}`);
+  }
+
+  private handleStopScheduler() {
+    if (this.scheduler) {
+      this.scheduler.stop();
+      this.postMessage({ type: 'toast', level: 'info', text: '调度器已停止' });
+      log('Scheduler stopped');
+    }
+  }
+
+  private handleGetConversation(agentId: string) {
+    if (!this.agentCommunication) return;
+    const history = this.agentCommunication.getHistory(agentId);
+    this.postMessage({ type: 'multiAgent:conversation', agentId, messages: history });
+  }
+
+  private handleStopAllAgents() {
+    if (this.agentPool) {
+      this.agentPool.stopAll();
+      log('All agents stopped');
+      this.pushAgentStatuses();
+    }
+  }
+
+  private handleAgentMessage(from: string, to: string | undefined, type: string, content: string) {
+    if (!this.agentCommunication) return;
+    this.agentCommunication.send(from, to, type as any, content);
+  }
+
+  private pushAgentStatuses() {
+    if (!this.agentPool) return;
+    const statuses = this.agentPool.getAgentStatuses();
+    this.postMessage({ type: 'multiAgent:agents', agents: statuses });
+  }
+
+  private pushWorkOrders() {
+    if (!this.workOrderPool) return;
+    const orders = this.workOrderPool.getAll().map(o => ({
+      id: o.id,
+      title: o.title,
+      description: o.description,
+      status: o.status,
+      priority: o.priority,
+      requiredRole: o.requiredRole,
+      assignedAgentId: o.assignedAgentId,
+      result: o.result,
+      error: o.error,
+      createdAt: o.createdAt,
+    }));
+    this.postMessage({ type: 'multiAgent:workOrders', orders });
   }
 }

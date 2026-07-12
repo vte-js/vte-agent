@@ -43,6 +43,29 @@ body {
   position: relative;
 }
 .main-area.hidden { display: none; }
+
+.agent-toggle-bar {
+  display: flex; gap: 2px; padding: 4px 8px;
+  border-bottom: 1px solid var(--vte-border);
+  background: rgba(255,255,255,0.02);
+  flex-shrink: 0;
+}
+.toggle-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border-radius: 5px; border: none;
+  background: none; color: var(--vte-text-muted);
+  font-size: 11px; cursor: pointer; transition: all 0.15s;
+}
+.toggle-btn:hover { background: rgba(255,255,255,0.05); color: var(--vte-text); }
+.toggle-btn.active { background: rgba(99,102,241,0.12); color: #818cf8; }
+
+.main-content-row {
+  display: flex;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  min-height: 0;
+}
 .config-overlay {
   flex: 1;
   overflow-y: auto;
@@ -114,6 +137,7 @@ body {
 .hdr-acts { display: flex; gap: 2px; }
 .hdr-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; background: none; border: none; color: var(--vte-text-muted); cursor: pointer; transition: all .15s; }
 .hdr-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); color: var(--vte-text); }
+.hdr-btn.active { background: rgba(99,102,241,0.15); color: #818cf8; }
 .hdr-btn.primary { background: var(--vte-primary); color: #fff; }
 .hdr-btn.primary:hover { opacity: 0.85; }
 
