@@ -1,10 +1,12 @@
 /**
  * Git tool - common git operations
+ *
+ * Uses HostAdapter when available, falls back to Node.js execSync.
  */
 
 import { ToolDefinition } from '../core/types'
 import { formatTextResult, formatErrorResult } from '../shared/protocol'
-import { execSync } from 'child_process'
+import { hasHost, getHost } from '../host/registry'
 
 export const gitTool: ToolDefinition = {
   name: 'git',
@@ -43,12 +45,21 @@ export const gitTool: ToolDefinition = {
         gitCmd += ` ${extraArgs}`
       }
 
+      if (hasHost() && getHost().shell) {
+        const result = await getHost().shell!.execute(gitCmd, { timeout: 10000 })
+        if (result.exitCode === 0) {
+          return formatTextResult(result.stdout || '(no output)')
+        }
+        return formatErrorResult(result.stderr || `Exit code: ${result.exitCode}`)
+      }
+
+      // Fallback: Node.js direct execution
+      const { execSync } = require('child_process')
       const output = execSync(gitCmd, {
         encoding: 'utf-8',
         timeout: 10000,
         maxBuffer: 1024 * 1024,
       })
-
       return formatTextResult(output || '(no output)')
     } catch (err: any) {
       return formatErrorResult(err.stderr || err.message)

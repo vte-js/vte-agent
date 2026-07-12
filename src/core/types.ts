@@ -106,6 +106,7 @@ export interface AgentMessage {
   content: string
   toolCalls?: ToolCall[]
   toolResults?: ToolResult[]
+  tool_call_id?: string  // Required for tool role messages (MiMo API)
 }
 
 // ── LLM Types ──

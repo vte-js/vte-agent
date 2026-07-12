@@ -10,10 +10,47 @@
       <svg class="diff-arrow" :class="{ rotated: !expanded }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="6 9 12 15 18 9"/></svg>
     </div>
     <Transition name="diff-expand">
-      <div v-if="expanded" class="diff-body">
+      <div v-if="expanded" ref="diffBodyEl" class="diff-body">
         <div v-for="(block, bi) in visibleBlocks" :key="bi" class="diff-block">
           <div v-if="block.header" class="diff-hunk-header">{{ block.header }}</div>
-          <div class="diff-lines">
+
+          <!-- Side-by-side view (wide screens) -->
+          <div v-if="isWide" class="diff-side-by-side">
+            <div class="diff-side diff-side-left">
+              <div class="diff-side-title">旧代码</div>
+              <div class="diff-lines">
+                <div
+                  v-for="(pair, pi) in buildPairs(block)"
+                  :key="'l-'+pi"
+                  class="diff-line"
+                  :class="pair.left?.type || 'empty'"
+                >
+                  <span class="diff-line-num">{{ pair.left?.oldNum ?? '' }}</span>
+                  <span class="diff-line-prefix">{{ pair.left?.prefix || '' }}</span>
+                  <span class="diff-line-text" v-html="pair.left ? highlightLine(pair.left.text, block.filename) : ''"></span>
+                </div>
+              </div>
+            </div>
+            <div class="diff-side-divider"></div>
+            <div class="diff-side diff-side-right">
+              <div class="diff-side-title">新代码</div>
+              <div class="diff-lines">
+                <div
+                  v-for="(pair, pi) in buildPairs(block)"
+                  :key="'r-'+pi"
+                  class="diff-line"
+                  :class="pair.right?.type || 'empty'"
+                >
+                  <span class="diff-line-num">{{ pair.right?.newNum ?? '' }}</span>
+                  <span class="diff-line-prefix">{{ pair.right?.prefix || '' }}</span>
+                  <span class="diff-line-text" v-html="pair.right ? highlightLine(pair.right.text, block.filename) : ''"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Unified view (narrow screens) -->
+          <div v-else class="diff-lines">
             <div
               v-for="(line, li) in block.lines"
               :key="li"
@@ -35,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import Prism from 'prismjs'
 import 'prismjs/components/prism-typescript'
 import 'prismjs/components/prism-javascript'
@@ -59,6 +96,11 @@ interface DiffBlock {
   lines: DiffLine[]
 }
 
+interface DiffPair {
+  left?: DiffLine   // old side (del or ctx)
+  right?: DiffLine  // new side (add or ctx)
+}
+
 const props = defineProps<{
   content: string
 }>()
@@ -66,7 +108,25 @@ const props = defineProps<{
 const expanded = ref(true)
 const showAll = ref(false)
 const maxBlocks = 5
+const isWide = ref(false)
+const diffBodyEl = ref<HTMLElement>()
 
+// ── Responsive detection ──
+function checkWidth() {
+  if (diffBodyEl.value) {
+    isWide.value = diffBodyEl.value.clientWidth >= 560
+  }
+}
+
+onMounted(() => {
+  checkWidth()
+  window.addEventListener('resize', checkWidth)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', checkWidth)
+})
+
+// ── Language detection ──
 const EXT_LANG_MAP: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
   json: 'json', css: 'css', py: 'python', sh: 'bash',
@@ -82,9 +142,7 @@ function highlightCode(code: string, lang: string): string {
   if (!code.trim()) return ''
   try {
     const grammar = Prism.languages[lang]
-    if (grammar) {
-      return Prism.highlight(code, grammar, lang)
-    }
+    if (grammar) return Prism.highlight(code, grammar, lang)
   } catch {}
   return escapeHtml(code)
 }
@@ -93,6 +151,7 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// ── Diff parsing ──
 function parseDiff(raw: string): DiffBlock[] {
   const blocks: DiffBlock[] = []
   let current: DiffBlock | null = null
@@ -100,44 +159,31 @@ function parseDiff(raw: string): DiffBlock[] {
   let newLine = 0
 
   for (const rawLine of raw.split('\n')) {
-    // File header
     if (rawLine.startsWith('diff --git')) {
       if (current && current.lines.length > 0) blocks.push(current)
       const filename = rawLine.replace('diff --git a/', '').split(' ')[0]
       current = { header: rawLine, filename, lines: [] }
-      oldLine = 0
-      newLine = 0
+      oldLine = 0; newLine = 0
       continue
     }
-
-    // Skip --- and +++ file headers
     if (rawLine.startsWith('--- ') || rawLine.startsWith('+++ ')) {
       if (!current) current = { lines: [] }
       continue
     }
-
-    // Replace git index line with empty line
     if (rawLine.startsWith('index ')) {
       if (!current) current = { lines: [] }
-      current.lines.push({ type: 'ctx', prefix: '', text: '' })
       continue
     }
-
-    // Hunk header
     if (rawLine.startsWith('@@')) {
       if (!current) current = { lines: [] }
       const match = rawLine.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@(.*)/)
       if (match) {
-        oldLine = parseInt(match[1])
-        newLine = parseInt(match[2])
+        oldLine = parseInt(match[1]); newLine = parseInt(match[2])
         const funcName = match[3]?.trim()
-        if (funcName) {
-          current.lines.push({ type: 'header', prefix: '', text: funcName })
-        }
+        if (funcName) current.lines.push({ type: 'header', prefix: '', text: funcName })
       }
       continue
     }
-
     if (!current) current = { lines: [] }
 
     if (rawLine.startsWith('+')) {
@@ -152,11 +198,51 @@ function parseDiff(raw: string): DiffBlock[] {
       current.lines.push({ type: 'ctx', prefix: ' ', text: rawLine })
     }
   }
-
   if (current && current.lines.length > 0) blocks.push(current)
   return blocks
 }
 
+// ── Build side-by-side pairs ──
+function buildPairs(block: DiffBlock): DiffPair[] {
+  const pairs: DiffPair[] = []
+  const lines = block.lines.filter(l => l.type !== 'header')
+
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+
+    if (line.type === 'ctx') {
+      // Context line — appears on both sides
+      pairs.push({ left: line, right: line })
+      i++
+    } else if (line.type === 'del') {
+      // Collect consecutive deletes
+      const dels: DiffLine[] = []
+      while (i < lines.length && lines[i].type === 'del') {
+        dels.push(lines[i]); i++
+      }
+      // Collect consecutive adds
+      const adds: DiffLine[] = []
+      while (i < lines.length && lines[i].type === 'add') {
+        adds.push(lines[i]); i++
+      }
+      // Pair them up
+      const maxLen = Math.max(dels.length, adds.length)
+      for (let j = 0; j < maxLen; j++) {
+        pairs.push({ left: dels[j], right: adds[j] })
+      }
+    } else if (line.type === 'add') {
+      // Add without preceding delete
+      pairs.push({ left: undefined, right: line })
+      i++
+    } else {
+      i++
+    }
+  }
+  return pairs
+}
+
+// ── Highlight & line numbers ──
 function highlightLine(text: string, filename?: string): string {
   const lang = filename ? detectLanguage(filename) : 'typescript'
   return highlightCode(text, lang)
@@ -168,6 +254,7 @@ function getLineNum(line: DiffLine): string {
   return line.oldNum?.toString() || ''
 }
 
+// ── Computed ──
 const blocks = computed(() => parseDiff(props.content))
 
 const visibleBlocks = computed(() => {
@@ -176,8 +263,7 @@ const visibleBlocks = computed(() => {
 })
 
 const stats = computed(() => {
-  let additions = 0
-  let deletions = 0
+  let additions = 0, deletions = 0
   for (const block of blocks.value) {
     for (const line of block.lines) {
       if (line.type === 'add') additions++
@@ -208,9 +294,18 @@ const stats = computed(() => {
 .diff-block { border-top: 1px solid var(--vte-border); }
 .diff-hunk-header { padding: 4px 12px; font-size: 11px; color: var(--vte-text-muted); font-family: monospace; background: rgba(0,0,0,0.1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ── Side-by-side layout ── */
+.diff-side-by-side { display: flex; }
+.diff-side { flex: 1; min-width: 0; }
+.diff-side-title { padding: 4px 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--vte-text-muted); background: rgba(0,0,0,0.08); border-bottom: 1px solid var(--vte-border); }
+.diff-side-left .diff-side-title { color: #f87171; }
+.diff-side-right .diff-side-title { color: #10b981; }
+.diff-side-divider { width: 1px; background: var(--vte-border); flex-shrink: 0; }
+
+/* ── Lines ── */
 .diff-lines { font-family: 'SF Mono', 'Menlo', 'Consolas', monospace; font-size: 12px; line-height: 1.5; }
-.diff-line { display: flex; padding-left: 12px; white-space: pre-wrap; word-break: break-all; min-height: 1.5em; }
-.diff-line-num { width: 12px; min-width: 12px; text-align: left; color: #4a5568; user-select: none; flex-shrink: 0; font-size: 11px; }
+.diff-line { display: flex; padding-left: 8px; white-space: pre-wrap; word-break: break-all; min-height: 1.5em; }
+.diff-line-num { width: 28px; min-width: 28px; text-align: right; padding-right: 8px; color: #4a5568; user-select: none; flex-shrink: 0; font-size: 11px; }
 .diff-line-prefix { width: 16px; min-width: 16px; text-align: center; user-select: none; flex-shrink: 0; font-weight: 500; color: #64748b; }
 .diff-line-text { flex: 1; min-width: 0; word-break: break-all; padding-left: 4px; }
 
@@ -223,8 +318,8 @@ const stats = computed(() => {
 .diff-line.del .diff-line-text { color: #fecaca; }
 
 .diff-line.ctx { color: #94a3b8; }
-
 .diff-line.header { color: #818cf8; font-style: italic; font-size: 11px; }
+.diff-line.empty { min-height: 1.5em; }
 
 .diff-more {
   padding: 8px 12px; text-align: center; font-size: 11px; color: #6366f1;

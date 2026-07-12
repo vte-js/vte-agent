@@ -11,6 +11,7 @@ export interface ContextAttachment {
 }
 
 export type WebviewToHostMessage =
+  | { type: 'ready' }
   | { type: 'chat'; text: string; model: string; temperature: number; topP: number; maxTokens: number; images?: ImageAttachment[]; context?: ContextAttachment[] }
   | { type: 'requestContext'; source: 'file' | 'folder' | 'doc' | 'skills' | 'terminal' | 'git' }
   | { type: 'gitSelect'; source: 'changes' | 'commits'; items: string[] }
@@ -41,9 +42,30 @@ export type WebviewToHostMessage =
   | { type: 'session:search'; query: string }
   | { type: 'session:export'; sessionId: string }
   | { type: 'session:import'; data: string }
+  // LSP management
+  | { type: 'getLspProfiles' }
+  | { type: 'lsp:setup' }
+  | { type: 'lsp:test' }
+  | { type: 'lsp:refreshStatus' }
+  | { type: 'lsp:clearCache' }
+  // LSP config editor
+  | { type: 'lspConfigEditor:open' }
+  | { type: 'lspConfigEditor:save'; profile: LspProfile }
+  | { type: 'lspConfigEditor:delete'; languageId: string }
+  | { type: 'lspConfigEditor:add'; profile: LspProfile }
 
 export type TaskMode = 'off' | 'llm-auto' | 'plugin-auto'
 export type ReasoningLevel = 'low' | 'medium' | 'high'
+
+export interface LspProfile {
+  languageId: string
+  tools: string[]
+  strategy: string
+  fileExtensions: string[]
+  timeoutMs?: number
+  command?: string
+  args?: string[]
+}
 
 export const TASK_MODE_OPTIONS: Array<{ value: TaskMode; label: string; desc: string }> = [
   { value: 'off', label: '关闭', desc: '不使用任务清单' },
@@ -90,6 +112,14 @@ export type HostToWebviewMessage =
   | { type: 'session:exported'; sessionId: string; data: string }
   | { type: 'session:imported'; session: SessionMeta }
   | { type: 'session:error'; text: string }
+  // LSP profiles
+  | { type: 'lspProfiles'; profiles: Record<string, LspProfile> }
+  | { type: 'lsp:testResult'; success: boolean; message: string }
+  | { type: 'lsp:statsUpdate'; stats: { totalCalls: number; cacheHits: number; cacheMisses: number; callsByLanguage: Record<string, number> } }
+  // LSP config editor
+  | { type: 'lspConfigEditor:data'; profiles: Record<string, LspProfile> }
+  | { type: 'lspConfigEditor:saved'; languageId: string }
+  | { type: 'lspConfigEditor:deleted'; languageId: string }
 
 export interface SessionMeta {
   id: string
@@ -128,4 +158,6 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { value: 'claude-3-haiku', label: 'Claude 3 Haiku' },
   { value: 'deepseek-chat', label: 'DeepSeek Chat' },
   { value: 'qwen-max', label: 'Qwen Max' },
+  { value: 'mimo-v2.5', label: 'MiMo v2.5 (Xiaomi)' },
+  { value: 'mimo-v2.5-pro', label: 'MiMo v2.5 Pro (Xiaomi)' },
 ]

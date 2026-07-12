@@ -10,6 +10,9 @@ import { runGrayBoxTests, formatTestResults } from '../agent/test-runner';
 import { ShadowGit } from '../agent/shadow-git';
 import { SessionManager } from '../agent/session-manager';
 import { ChatMessage } from '../agent/session-types';
+import { getCodeIntelligenceService, getConfigurationResolver } from './lsp';
+import { setHost, VSCodeHostAdapter, VSCodeMessaging } from '../host';
+import { registerTools } from '../core/registry';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -57,19 +60,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     elapsed?: number;
   }> = [];
 
+
   constructor(private readonly extensionUri: vscode.Uri) {
     outputChannel = vscode.window.createOutputChannel('VTE Agent');
   }
 
-  /** Get the active webview (panel takes priority over sidebar view) */
-  private get webview(): vscode.Webview | undefined {
-    return this.panel?.webview ?? this.view?.webview;
-  }
+
 
   /** Post message to all active webviews */
   public postMessage(msg: any) {
-    this.view?.webview.postMessage(msg);
-    this.panel?.webview.postMessage(msg);
+    console.log(`[VTE] postMessage: ${msg.type}`, msg);
+    let sent = false;
+    if (this.panel) {
+      console.log('[VTE] Sending to panel webview');
+      this.panel.webview.postMessage(msg);
+      sent = true;
+    }
+    if (this.view) {
+      console.log('[VTE] Sending to view webview');
+      this.view.webview.postMessage(msg);
+      sent = true;
+    }
+    if (!sent) {
+      console.log('[VTE] WARNING: No webview available to send message');
+    }
   }
 
   /** Send full chat history + current state to a newly created webview */
@@ -95,9 +109,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   // ── Panel entry point (status bar) ──
 
-  openPanel() {
+  openPanel(onReady?: () => void) {
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Beside);
+      if (onReady) {
+        // Delay callback to ensure webview is ready
+        setTimeout(onReady, 150);
+      }
       return;
     }
 
@@ -121,6 +139,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       log('Panel disposed');
     });
 
+    // Execute callback after webview is ready
+    if (onReady) {
+      // Use setTimeout to ensure webview has processed initial HTML
+      setTimeout(onReady, 100);
+    }
+
     log('Webview panel created');
   }
 
@@ -139,6 +163,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       log(`Received: ${message.type}`);
       try {
       switch (message.type) {
+        case 'ready':
+          console.log('[VTE] Webview signaled ready, sending initial data');
+          this.sendConfig();
+          await this.handleGetLspProfiles();
+          this.handleGetPermissionConfig();
+          break;
         case 'chat':
           this.trackUserMessage(message.text, message.images, message.context);
           await this.handleChat(message.text, message.model, message.temperature, message.topP, message.maxTokens, message.images, message.context);
@@ -199,6 +229,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'permissionResponse':
           this.handlePermissionResponse(message.requestId, message.decision);
           break;
+        case 'questionResponse':
+          this.handleQuestionResponse(message.requestId, message.answer);
+          break;
         // Session management
         case 'session:create':
           await this.createSession(message.name);
@@ -233,6 +266,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'session:import':
           await this.importSession(message.data);
           break;
+        // LSP management
+        case 'getLspProfiles':
+          await this.handleGetLspProfiles();
+          break;
+        case 'getLspConfigEditorData':
+          await this.handleGetLspConfigEditorData();
+          break;
+        case 'lsp:setup':
+          this.handleLspSetup();
+          break;
+        case 'lsp:test':
+          this.handleLspTest();
+          break;
+        case 'lsp:refreshStatus':
+          this.handleLspRefreshStatus();
+          break;
+        case 'lsp:clearCache':
+          this.handleLspClearCache();
+          break;
+        case 'lspConfigEditor:save':
+          await this.handleLspConfigSave(message.profile);
+          break;
+        case 'lspConfigEditor:delete':
+          await this.handleLspConfigDelete(message.languageId);
+          break;
+        case 'lspConfigEditor:add':
+          console.log('[VTE] SWITCH MATCHED lspConfigEditor:add, profile:', message.profile);
+          await this.handleLspConfigAdd(message.profile);
+          break;
         case 'skills:list':
           this.handleSkillsList();
           break;
@@ -253,7 +315,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
       }
       } catch (err: any) {
-        log(`[DEBUG] ERROR in onDidReceiveMessage handler: ${err.message}`);
+        console.error(`[VTE] ERROR handling ${message.type}:`, err);
+        log(`[DEBUG] ERROR in onDidReceiveMessage handler for ${message.type}: ${err.message}`);
         log(`[DEBUG] Stack: ${err.stack}`);
         // If it was a chat message, make sure the webview gets an error response
         if (message.type === 'chat') {
@@ -1069,6 +1132,32 @@ Example usage here
         this.engine = new AgentEngine(ctx, model || cfgModel, apiKey, apiBase, workspaceRoot);
         this.engine.setReasoningLevel(this.reasoningLevel);
         log(`[DEBUG] Engine created successfully`);
+
+        // Initialize host adapter for tools
+        const messaging = new VSCodeMessaging();
+        const host = new VSCodeHostAdapter(messaging);
+        setHost(host);
+
+        // Load and register LSP tools from host adapter
+        await host.loadLspTools();
+        if (host.lspTools.length > 0) {
+          registerTools(host.lspTools);
+          log(`[DEBUG] Loaded ${host.lspTools.length} LSP tools from host adapter`);
+        }
+
+        // Listen to LSP stats changes and send to webview
+        const lspService = getCodeIntelligenceService(workspaceRoot);
+        lspService.onStatsChange((stats) => {
+          this.postMessage({
+            type: 'lsp:statsUpdate',
+            stats: {
+              totalCalls: stats.totalCalls,
+              cacheHits: stats.cacheHits,
+              cacheMisses: stats.cacheMisses,
+              callsByLanguage: stats.callsByLanguage,
+            }
+          });
+        });
         // Load existing feedback for calibration
         const existingFeedback = this.loadFeedback();
         if (existingFeedback.length > 0) {
@@ -1078,6 +1167,9 @@ Example usage here
         this.engine.onViewUpdate = (update) => {
           if (update.type === 'thinking_chunk') {
             this.pendingThinking += update.text as string;
+          } else if (update.type === 'thinking_start') {
+            // New thinking phase — forward to webview to create new streaming message
+            this.postMessage({ type: 'thinking' });
           } else if (update.type === 'tool_call') {
             this.pendingToolCalls.push({
               id: update.toolCallId as string,
@@ -1091,6 +1183,10 @@ Example usage here
               tc.status = (update.elapsed as number) < 0 ? 'error' : 'done';
               tc.result = update.result as string;
               tc.elapsed = Math.abs(update.elapsed as number);
+              // Push tasks immediately after task tool execution for real-time UI update
+              if (tc.name?.startsWith('task_')) {
+                this.pushTasks();
+              }
             }
           } else if (update.type === 'permission_request') {
             // Forward permission request to webview
@@ -1101,6 +1197,16 @@ Example usage here
               toolName: update.toolName as string,
               toolArgs: update.toolArgs as Record<string, unknown>,
               category: update.category as string,
+            });
+          } else if (update.type === 'question_request') {
+            // Forward question request to webview
+            this.postMessage({
+              type: 'questionRequest',
+              requestId: update.requestId as string,
+              question: update.question as string,
+              options: update.options as Array<{ label: string; description?: string }>,
+              multiple: update.multiple as boolean,
+              recommended: update.recommended as string | undefined,
             });
           }
           this.postMessage(update);
@@ -1117,7 +1223,7 @@ Example usage here
     if (model) { this.engine.setModel(model); }
 
     this.pendingThinking = '';
-    this.postMessage({ type: 'thinking' });
+    // thinking message is now sent by engine's thinking_start event before each LLM call
     try {
       // Read file contents for context attachments
       let enrichedContext: Array<{ path: string; name: string; content: string }> | undefined;
@@ -1163,10 +1269,25 @@ Example usage here
       }
       const rawReply = await this.engine.chat(text, temperature, topP, maxTokens, images, enrichedContext);
       // Strip <system-reminder> tags — these are for LLM context only, not for display
-      const reply = this.stripSystemReminder(rawReply);
+      let reply = this.stripSystemReminder(rawReply);
+      // Extract <next_step> suggestion — only accept actionable steps, reject questions
+      const nextStepMatch = reply.match(/<next_step>(.*?)<\/next_step>/);
+      let nextStepSuggestion = '';
+      if (nextStepMatch) {
+        const raw = nextStepMatch[1].trim();
+        // Reject if it contains question marks or looks like a question
+        const isQuestion = /[？?]|告诉|告诉我|你的需求|请告诉|需要.*吗|想要|你想/.test(raw);
+        if (!isQuestion && raw.length > 0 && raw.length <= 20) {
+          nextStepSuggestion = raw;
+        }
+        reply = reply.replace(/<next_step>.*?<\/next_step>/g, '').trim();
+      }
       log(`Response: "${reply.substring(0, 200)}${reply.length > 200 ? '...' : ''}"`);
       this.trackAssistantMessage(reply);
       this.postMessage({ type: 'response', text: reply });
+      if (nextStepSuggestion) {
+        this.postMessage({ type: 'nextStep', suggestion: nextStepSuggestion });
+      }
       this.pushTasks();
       this.pushTokenStats();
       // Auto-save session
@@ -1262,6 +1383,243 @@ Example usage here
   }
 
   private _pendingPermissionTool = '';
+
+  private handleQuestionResponse(requestId: string, answer: string) {
+    if (this.engine) {
+      this.engine.resolveQuestion(answer);
+      log(`Question answered: ${answer || '(cancelled)'}`);
+    }
+  }
+
+  // ── LSP Management ──
+
+  private async handleGetLspProfiles() {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    console.log('[VTE-LSP] handleGetLspProfiles workspaceRoot:', workspaceRoot);
+    if (!workspaceRoot) {
+      console.log('[VTE-LSP] No workspace root, sending empty profiles');
+      this.postMessage({ type: 'lspProfiles', profiles: {} });
+      return;
+    }
+
+    try {
+      const resolver = getConfigurationResolver(workspaceRoot);
+      const config = await resolver.reloadConfig();
+      const profiles: Record<string, any> = {};
+      for (const [langId, profile] of config.profiles) {
+        profiles[langId] = profile;
+      }
+      const keys = Object.keys(profiles);
+      console.log(`[VTE-LSP] handleGetLspProfiles sending ${keys.length} profiles:`, keys);
+      this.postMessage({ type: 'lspProfiles', profiles });
+    } catch (error) {
+      console.error('[VTE-LSP] Failed to get LSP profiles:', error);
+      this.postMessage({ type: 'lspProfiles', profiles: {} });
+    }
+  }
+
+  private async handleGetLspConfigEditorData() {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    console.log('[VTE-LSP] handleGetLspConfigEditorData workspaceRoot:', workspaceRoot);
+    if (!workspaceRoot) {
+      this.postMessage({ type: 'lspConfigEditor:data', profiles: {} });
+      return;
+    }
+
+    try {
+      const resolver = getConfigurationResolver(workspaceRoot);
+      const config = await resolver.reloadConfig();
+      const profiles: Record<string, any> = {};
+      for (const [langId, profile] of config.profiles) {
+        profiles[langId] = profile;
+      }
+      const keys = Object.keys(profiles);
+      console.log(`[VTE-LSP] handleGetLspConfigEditorData sending ${keys.length} profiles:`, keys);
+      this.postMessage({ type: 'lspConfigEditor:data', profiles });
+    } catch (error) {
+      console.error('[VTE-LSP] Failed to get LSP config editor data:', error);
+      this.postMessage({ type: 'lspConfigEditor:data', profiles: {} });
+    }
+  }
+
+  private handleLspSetup() {
+    // Execute the setup wizard command
+    vscode.commands.executeCommand('vteAgent.setupLsp');
+  }
+
+  private handleLspTest() {
+    console.log('[VTE] handleLspTest called');
+    // Test LSP by running a simple definition lookup on current file
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      console.log('[VTE] No active editor');
+      vscode.window.showWarningMessage('No active editor');
+      return;
+    }
+
+    const document = editor.document;
+    const position = editor.selection.active;
+    console.log(`[VTE] Testing LSP at ${document.fileName}:${position.line + 1}`);
+
+    vscode.commands.executeCommand<vscode.Location[]>(
+      'vscode.executeDefinitionProvider',
+      document.uri,
+      position
+    ).then(
+      (locations) => {
+        const count = locations?.length ?? 0;
+        console.log(`[VTE] LSP test result: ${count} definitions found`);
+        if (count > 0) {
+          const firstLoc = locations![0];
+          const filePath = vscode.workspace.asRelativePath(firstLoc.uri);
+          const line = firstLoc.range?.start?.line ?? 0;
+          const msg = `LSP: Found ${count} definition(s) at ${filePath}:${line + 1}`;
+          vscode.window.showInformationMessage(msg);
+          this.postMessage({
+            type: 'lsp:testResult',
+            success: true,
+            message: msg
+          });
+        } else {
+          const msg = `LSP: No definition found at cursor position (normal for keywords/literals)`;
+          vscode.window.showInformationMessage(msg);
+          this.postMessage({
+            type: 'lsp:testResult',
+            success: true,
+            message: msg
+          });
+        }
+      },
+      (error) => {
+        console.log(`[VTE] LSP test error: ${error.message}`);
+        vscode.window.showErrorMessage(`LSP test failed: ${error.message}`);
+        this.postMessage({
+          type: 'lsp:testResult',
+          success: false,
+          message: `LSP test failed: ${error.message || error}`
+        });
+      }
+    );
+  }
+
+  private async handleLspRefreshStatus() {
+    console.log('[VTE] LSP refresh status');
+    vscode.window.showInformationMessage('LSP status refreshed');
+    // Send updated profiles to webview
+    await this.handleGetLspProfiles();
+  }
+
+  private handleLspClearCache() {
+    console.log('[VTE] LSP clear cache');
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    if (workspaceRoot) {
+      const service = getCodeIntelligenceService(workspaceRoot);
+      service.clearCache();
+    }
+    vscode.window.showInformationMessage('LSP cache cleared');
+    this.postMessage({ type: 'lsp:cacheStats', stats: { size: 0 } });
+  }
+
+  private async handleLspConfigSave(profile: any) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    console.log('[VTE-LSP] handleLspConfigSave workspaceRoot:', workspaceRoot, 'profile:', profile?.languageId);
+    if (!workspaceRoot) return;
+
+    const configPath = path.join(workspaceRoot, '.github', 'agent-lsp.json');
+    const dirUri = vscode.Uri.file(path.join(workspaceRoot, '.github'));
+    const configUri = vscode.Uri.file(configPath);
+    console.log('[VTE] handleLspConfigSave configPath:', configPath);
+
+    try {
+      // Ensure directory exists
+      try {
+        await vscode.workspace.fs.stat(dirUri);
+      } catch {
+        await vscode.workspace.fs.createDirectory(dirUri);
+      }
+
+      // Read existing config or use default
+      let config: any = { version: 1, profiles: {}, deleted: [] };
+      try {
+        const content = await vscode.workspace.fs.readFile(configUri);
+        config = JSON.parse(Buffer.from(content).toString('utf-8'));
+        if (!Array.isArray(config.deleted)) {
+          config.deleted = [];
+        }
+      } catch {
+        // Use default config
+      }
+
+      config.profiles[profile.languageId] = {
+        tools: profile.tools,
+        strategy: profile.strategy,
+        fileExtensions: profile.fileExtensions,
+        timeoutMs: profile.timeoutMs,
+        command: profile.command,
+        args: profile.args,
+      };
+
+      // Remove from deleted list so resolver doesn't re-delete it
+      if (Array.isArray(config.deleted)) {
+        const delIdx = config.deleted.indexOf(profile.languageId);
+        if (delIdx !== -1) {
+          config.deleted.splice(delIdx, 1);
+        }
+      }
+
+      const data = Buffer.from(JSON.stringify(config, null, 2), 'utf-8');
+      await vscode.workspace.fs.writeFile(configUri, data);
+      console.log('[VTE-LSP] handleLspConfigSave file written, profiles:', Object.keys(config.profiles));
+      this.postMessage({ type: 'lspConfigEditor:saved', languageId: profile.languageId });
+      console.log('[VTE-LSP] handleLspConfigSave calling handleGetLspProfiles');
+      await this.handleGetLspProfiles();
+      console.log('[VTE-LSP] handleLspConfigSave handleGetLspProfiles done');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[VTE] handleLspConfigSave error:', error);
+      vscode.window.showErrorMessage(`Failed to save profile: ${msg}`);
+    }
+  }
+
+  private async handleLspConfigDelete(languageId: string) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    if (!workspaceRoot) return;
+
+    const configPath = path.join(workspaceRoot, '.github', 'agent-lsp.json');
+    const configUri = vscode.Uri.file(configPath);
+
+    try {
+      let config: any = { version: 1, profiles: {}, deleted: [] };
+      try {
+        const content = await vscode.workspace.fs.readFile(configUri);
+        config = JSON.parse(Buffer.from(content).toString('utf-8'));
+        if (!Array.isArray(config.deleted)) {
+          config.deleted = [];
+        }
+      } catch {
+        return;
+      }
+
+      delete config.profiles[languageId];
+
+      if (!config.deleted.includes(languageId)) {
+        config.deleted.push(languageId);
+      }
+
+      const data = Buffer.from(JSON.stringify(config, null, 2), 'utf-8');
+      await vscode.workspace.fs.writeFile(configUri, data);
+      this.postMessage({ type: 'lspConfigEditor:deleted', languageId });
+      await this.handleGetLspProfiles();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Failed to delete profile: ${msg}`);
+    }
+  }
+
+  private async handleLspConfigAdd(profile: any) {
+    console.log('[VTE-LSP] handleLspConfigAdd called, profile:', JSON.stringify(profile));
+    await this.handleLspConfigSave(profile);
+  }
 
   // ── Command Handlers (called from extension.ts) ──
 

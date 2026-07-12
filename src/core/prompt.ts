@@ -44,7 +44,11 @@ const PLAN_BASE_TEMPLATE = `<identity>
 
 <output-format>
 Output a structured plan with numbered steps. Be concise and specific. No vague suggestions.
-</output-format>`
+</output-format>
+
+<note>
+When you need user input, clarification, or a decision during planning, use the question tool to present options. Do not ask in plain text.
+</note>`
 
 const CODE_BASE_TEMPLATE = `<identity>
 {{AGENT_ROLE}}
@@ -65,6 +69,9 @@ const CODE_BASE_TEMPLATE = `<identity>
 - Never delete files without confirmation.
 - Never run destructive git commands without explicit permission.
 - Match the existing code style in the project.
+- Act decisively. Do not repeatedly announce "let me explore" or "let me check" — just do it. Read files and execute commands directly without narrating your plan.
+- When you need user input, clarification, or a decision (e.g. multiple valid approaches, user preference needed), use the question tool to present options. Do not ask in plain text — always use the question tool for interactive decisions.
+- At the very end of your response, ALWAYS add a <next_step> tag with a short actionable next step the user can take. Even if your response ends with a question, still add a <next_step> with a relevant action. Rules: (1) It MUST be an action like "运行测试", "提交代码", "继续完善其他文件", "输入你的需求". (2) NEVER put a question mark (？/?) inside <next_step>. (3) Max 15 characters.
 </constraints>`
 
 // ── Role Definitions ──
@@ -129,7 +136,7 @@ Mode switching: The user can switch between PLAN and CODE modes using the mode s
 // ── Tool Definitions ──
 
 export const TOOL_USE: Record<AgentMode, string> = {
-  plan: `You have access to read-only tools: read, search, list, grep, glob, diagnostics, git.
+  plan: `You have access to read-only tools: read, search, list, grep, glob, diagnostics, git, lsp_document_symbols, lsp_goto_definition, lsp_find_references, lsp_hover.
 Use these to explore the codebase before making your plan.`,
   code: `- read: Read file content (with optional line range)
 - search: Search file contents with regex
@@ -151,7 +158,13 @@ Use these to explore the codebase before making your plan.`,
 - checkpoint_restore: Restore to a specific checkpoint
 - checkpoint_delete: Delete a checkpoint
 - checkpoint_diff: Show code diff (use commit hashes from checkpoint_log, or no args for recent changes)
-- checkpoint_log: Show recent code change history with commit hashes`,
+- checkpoint_log: Show recent code change history with commit hashes
+- lsp_goto_definition: Go to definition of a symbol (function, class, variable)
+- lsp_find_references: Find all references to a symbol
+- lsp_hover: Get hover information (type, documentation) for a symbol
+- lsp_document_symbols: Get all symbols in a document (functions, classes, variables)
+- lsp_clear_cache: Clear LSP results cache
+- lsp_stats: Get LSP service statistics`,
 }
 
 // ── Rules Placeholder ──

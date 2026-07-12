@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VTE Agent LSP Configuration",
+  "description": "Configuration file for VTE Agent LSP integration",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Configuration schema version",
+      "const": 1
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Language-specific LSP profiles",
+      "additionalProperties": {
+        "$ref": "#/definitions/LspProfile"
+      }
+    }
+  },
+  "required": ["version", "profiles"],
+  "definitions": {
+    "LspProfile": {
+      "type": "object",
+      "description": "LSP configuration for a specific language",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "description": "List of enabled LSP tools",
+          "items": {
+            "type": "string",
+            "enum": ["definition", "references", "hover", "documentSymbol"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "strategy": {
+          "type": "string",
+          "description": "Execution strategy",
+          "enum": ["builtin", "direct"],
+          "default": "builtin"
+        },
+        "fileExtensions": {
+          "type": "array",
+          "description": "File extensions associated with this language",
+          "items": {
+            "type": "string",
+            "pattern": "^\\..+"
+          },
+          "uniqueItems": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "description": "Timeout in milliseconds for LSP operations",
+          "minimum": 1000,
+          "maximum": 30000,
+          "default": 5000
+        },
+        "command": {
+          "type": "string",
+          "description": "Command to start LSP server (only for direct strategy)"
+        },
+        "args": {
+          "type": "array",
+          "description": "Arguments for the LSP server command",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["tools", "strategy", "fileExtensions"],
+      "if": {
+        "properties": { "strategy": { "const": "direct" } }
+      },
+      "then": {
+        "required": ["command"]
+      }
+    }
+  }
+}

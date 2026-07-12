@@ -1,108 +1,120 @@
 # VTE Agent
 
-AI coding agent for VS Code with fox avatar, context-aware assistance, and fine-grained permission control.
+Pluggable-host AI coding agent with fine-grained permission control.
+
+[中文文档](README_CN.md)
 
 ## Features
 
-- **Multi-model support** — Switch between GPT-4o, Claude, DeepSeek, Qwen and more
-- **Context attachment** — Add files, folders, documents, skills, terminal output, or Git changes as context
-- **Built-in skills** — 9 coding skills: code review, unit tests, refactoring, debugging, API design, security audit, database design, performance optimization, Git workflow
-- **Permission control** — Fine-grained tool permissions (allow/ask/deny) per category, with real-time authorization dialogs
-- **Reasoning levels** — Low (fast), Medium (balanced), High (deep thinking) with differentiated behavior
-- **Slash commands** — Type `/` for quick skill access, `@` for context attachment
-- **Session management** — Create, restore, rename, and search sessions
-- **Image upload** — Attach images for visual context
-- **Thinking display** — Collapsible thinking process with token tracking
+- **Multi-model** — GPT-4o, Claude, DeepSeek, Qwen, MiMo
+- **Pluggable architecture** — HostAdapter for VSCode, Web, CLI, Electron, JetBrains
+- **Context attachment** — Files, folders, documents, Skills, terminal, Git
+- **Session management** — Create, restore, rename, search, import/export
+- **Task tracking** — Real-time task progress with status updates
+- **Checkpoint system** — Save/restore code state with diff view
+- **Built-in skills** — 9 coding skills via `/` slash commands
+- **Question tool** — LLM asks structured questions, user selects options
+- **Tab to accept** — LLM suggests next action, Tab auto-fills input
+- **Real-time tool calls** — Each tool call appears inline as it executes
+- **Per-turn thinking** — Collapsible thinking per LLM iteration
+- **Side-by-side diff** — Left/right comparison on wide screens
+- **Dynamic placeholder** — Input hint updates based on LLM suggestions
+- **Fine-grained permissions** — Allow/ask/deny per tool category
+- **Reasoning levels** — Low / Medium / High
+
+## Architecture
+
+```
+src/
+├── core/          # Framework-agnostic types, registry, permissions
+├── host/          # HostAdapter interface + implementations
+│   ├── types.ts   # HostAdapter, HostFileSystem, HostUI, HostMessaging
+│   ├── vscode.ts  # VSCode adapter
+│   └── registry.ts
+├── agent/         # Engine, tools, sessions
+├── tools/         # file, bash, git, search, question...
+├── context/       # Project indexing, file reading
+├── skills/        # Built-in skill definitions
+└── vscode/        # VSCode extension, panel, LSP
+
+webview/src/
+├── composables/   # useHost, useChat, useConfig
+├── components/    # MessageBubble, ToolCallBlock, DiffViewer, QuestionDialog
+└── protocol.ts    # Message types (webview ↔ host)
+```
+
+### HostAdapter
+
+```typescript
+interface HostAdapter {
+  fs: HostFileSystem       // File I/O
+  workspace: HostWorkspace  // Workspace info
+  ui: HostUI               // Dialogs, pickers, toast
+  messaging: HostMessaging  // postMessage communication
+  shell?: HostShell         // Command execution
+  lsp?: HostLSP            // Language server protocol
+  lspTools?: ToolDefinition[]
+}
+```
+
+Implement `HostAdapter` + call `setHost()`. Tools use `getHost()` with Node.js fallback.
 
 ## Installation
 
-1. Open VS Code
-2. Go to Extensions (Ctrl+Shift+X)
-3. Search for "VTE Agent"
-4. Click Install
-
-Or install from VSIX:
 ```bash
+# VSCode Marketplace
 code --install-extension vte-agent-0.0.1.vsix
 ```
 
 ## Quick Start
 
-1. Open the VTE Agent sidebar from the Activity Bar
-2. Click the settings button (⚙️) or run `VTE Agent: Open Chat`
-3. Configure your API key and model
-4. Start chatting!
+1. Open VTE Agent from Activity Bar or Status Bar
+2. Configure API key and model
+3. Start chatting
 
 ## Usage
 
-### Keyboard Shortcuts
-- `/` — Open slash commands (quick skill access)
-- `@` — Open context attachment menu
-- `Enter` — Send message
-- `Shift+Enter` — New line
+| Key | Action |
+|-----|--------|
+| `/` | Slash commands |
+| `@` | Context attachment |
+| `Enter` | Send message |
+| `Shift+Enter` | New line |
+| `Tab` | Accept LLM suggestion |
 
 ### Context Types
-- **File** — Select project code files
-- **Folder** — Recursively read directory contents
-- **Document** — Markdown, TXT, and other document files
-- **Skills** — Agent skill definitions (built-in + project)
-- **Terminal** — Capture terminal output via Shell Integration
-- **Git** — Working tree changes or recent commit history
+File / Folder / Document / Skills / Terminal / Git
 
-### Reasoning Levels
-- **Low** — Disable thinking, fastest response
-- **Medium** — Standard thinking, balanced speed and quality
-- **High** — Deep thinking with lower temperature for focused reasoning
-
-### Permission Control
-Configure per-category permissions in Settings:
-- File Read / Write
-- Terminal execution
-- Git operations
-- Diagnostics
-- Web requests
-- Tasks / Checkpoints
+### Permissions
+Configure per category: file read/write, terminal, git, diagnostics, web, tasks, checkpoints.
 
 ## Configuration
 
-Open Settings (`Cmd+,`) and search for "VTE Agent" to configure:
-- API Key
-- API Base URL
-- Model name
-
-Or click the settings button (⚙️) in the sidebar title bar.
+`Cmd+,` → "VTE Agent": API Key, Base URL, Model, Permissions, Reasoning level, Task mode.
 
 ## Built-in Skills
 
 | Skill | Description |
 |-------|-------------|
-| code-review | Code quality, bugs, security, performance review |
-| unit-test | Generate unit tests with edge cases |
-| refactor | Code refactoring following SOLID principles |
-| debug | Systematic debugging and root cause analysis |
-| api-design | RESTful API design patterns |
-| security-audit | OWASP Top 10 security checks |
-| database-design | Schema design and query optimization |
-| performance | Performance analysis and optimization |
-| git-workflow | Git best practices and commit conventions |
+| code-review | Code quality, bugs, security, performance |
+| unit-test | Unit tests with edge cases |
+| refactor | SOLID principles refactoring |
+| debug | Systematic debugging |
+| api-design | RESTful API patterns |
+| security-audit | OWASP Top 10 checks |
+| database-design | Schema and query optimization |
+| performance | Performance analysis |
+| git-workflow | Git best practices |
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-cd webview && npm install
-
-# Build
-npm run compile && cd webview && npx vite build
-
-# Watch mode
-npm run watch
-
-# Run extension
-Press F5 in VS Code
+npm install && cd webview && npm install
+npm run compile && cd .. && npm run build:webview
+npm run watch          # Watch mode
+# Press F5 in VS Code to run
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT

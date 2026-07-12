@@ -170,6 +170,7 @@ watch(() => error.value, (msg) => {
 
 function onCreate() {
   createSession()
+  emit('close')
 }
 
 function onRestore(id: string) {

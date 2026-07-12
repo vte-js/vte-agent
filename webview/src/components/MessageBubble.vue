@@ -1,5 +1,9 @@
 <template>
-  <div class="mg" :class="msg.role">
+  <!-- Tool-call-only message: no avatar, no bubble, just the tool entry -->
+  <div v-if="msg.role === 'assistant' && !msg.text && msg.toolCalls?.length && !msg.thinkingPhase" class="tool-inline">
+    <ToolCallBlock :tool-calls="msg.toolCalls" />
+  </div>
+  <div v-else class="mg" :class="msg.role">
     <div v-if="msg.role === 'assistant'" class="ml">
       <AgentAvatar class="ml-icon" :speaking="isStreaming" compact />
       VTE Agent
@@ -19,7 +23,7 @@
         <div class="tc-body">{{ msg.thinkingText }}</div>
       </div>
     </div>
-    <div v-if="msg.text || msg.images?.length || msg.context?.length || msg.role !== 'assistant' || !msg.thinkingPhase" class="mb">
+    <div v-if="msg.text || msg.images?.length || msg.context?.length || isError || (msg.role === 'assistant' && msg.thinkingText && msg.text) || msg.role !== 'assistant'" class="mb">
       <!-- Context file cards -->
       <div v-if="msg.role === 'user' && msg.context?.length" class="msg-context">
         <div v-for="(f, idx) in msg.context" :key="idx" class="ctx-file-card">
@@ -36,7 +40,6 @@
       <div v-if="msg.role === 'user' && msg.images?.length" class="msg-images">
         <img v-for="(img, idx) in msg.images" :key="idx" :src="img.dataUrl" :alt="img.name" class="msg-image" @click="previewImage(img)" />
       </div>
-      <ToolCallBlock v-if="msg.role === 'assistant' && msg.toolCalls?.length" :tool-calls="msg.toolCalls" />
       <!-- Error message with special styling -->
       <div v-if="msg.role === 'assistant' && isError" class="mt error-msg">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -46,14 +49,17 @@
       </div>
       <div v-else-if="msg.role === 'assistant'" class="mt" v-html="renderedText"></div>
       <div v-else class="mt">{{ msg.text }}</div>
+      <!-- Tool calls below text so they stay visible at bottom -->
+      <ToolCallBlock v-if="msg.role === 'assistant' && msg.toolCalls?.length" :tool-calls="msg.toolCalls" />
+      <TaskPanel v-if="msg.role === 'assistant' && msg.tasks?.length" :tasks="msg.tasks!" />
       <span v-if="isStreaming" class="stream-cursor"></span>
       <button v-if="msg.role === 'assistant' && mode === 'plan'" class="exec-plan" @click="$emit('executePlan', msg.text)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         切换到编码模式并执行
       </button>
     </div>
-    <!-- Toolbar OUTSIDE the bubble -->
-    <div v-if="!editing" class="msg-toolbar">
+    <!-- Toolbar OUTSIDE the bubble — hide for empty assistant messages -->
+    <div v-if="!editing && (msg.role !== 'assistant' || msg.text || msg.thinkingText || msg.toolCalls?.length)" class="msg-toolbar">
       <span v-if="msg.role === 'user' && msg.timestamp" class="msg-time">{{ msg.timestamp }}</span>
       <VTooltip text="复制内容">
         <button class="mt-btn" @click="copyText">
@@ -98,6 +104,7 @@ import type { AgentMode } from '../composables/useMode'
 import { renderMarkdown } from '../markdown'
 import VTooltip from './VTooltip.vue'
 import ToolCallBlock from './ToolCallBlock.vue'
+import TaskPanel from './TaskPanel.vue'
 import AgentAvatar from './AgentAvatar.vue'
 import FeedbackModal from './FeedbackModal.vue'
 import ImagePreview from './ImagePreview.vue'
@@ -178,3 +185,9 @@ function startEdit() {
   emit('edit', props.msg.text, props.msg.id, props.msg.context || [])
 }
 </script>
+
+<style scoped>
+.tool-inline {
+  padding: 0;
+}
+</style>

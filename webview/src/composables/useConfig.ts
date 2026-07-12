@@ -1,6 +1,7 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useVsCode } from './useVsCode'
-import type { ReasoningLevel } from '../protocol'
+import { useNotification } from './useNotification'
+import type { ReasoningLevel, LspProfile } from '../protocol'
 
 export interface ModelProfile {
   name: string
@@ -44,11 +45,22 @@ export const PERMISSION_CATEGORIES: Array<{ key: keyof PermissionConfig; label: 
 
 export function useConfig() {
   const { send, onMessage } = useVsCode()
+  const { notify } = useNotification()
   const configVisible = ref(false)
+  const configEditorVisible = ref(false)
   const models = ref<ModelProfile[]>([])
   const activeModelIndex = ref(0)
   const permissionConfig = ref<PermissionConfig>({ ...DEFAULT_PERMISSION_CONFIG })
   const reasoningLevel = ref<ReasoningLevel>('medium')
+  const lspProfiles = ref<Record<string, LspProfile>>({})
+  const lspConfigProfiles = ref<Record<string, LspProfile>>({})
+  let isConfigEditorInitializing = false
+
+  watch(configEditorVisible, (v) => {
+    if (!v) {
+      isConfigEditorInitializing = false
+    }
+  })
 
   // Current active model (derived)
   const apiKey = ref('')
@@ -78,6 +90,36 @@ export function useConfig() {
       configVisible.value = true
     } else if (msg.type === 'permissionConfig') {
       permissionConfig.value = { ...DEFAULT_PERMISSION_CONFIG, ...msg.config }
+    } else if (msg.type === 'lspProfiles') {
+      console.log('[VTE-UI] lspProfiles received, keys:', Object.keys(msg.profiles || {}))
+      lspProfiles.value = msg.profiles || {}
+    } else if (msg.type === 'lspConfigEditor:data') {
+      console.log('[VTE-UI] lspConfigEditor:data received, isConfigEditorInitializing:', isConfigEditorInitializing, 'keys:', Object.keys(msg.profiles || {}))
+      // Only apply during initial config editor open (isConfigEditorInitializing=true)
+      // After add/save/delete, config editor manages its own state locally
+      if (isConfigEditorInitializing) {
+        isConfigEditorInitializing = false
+        lspConfigProfiles.value = msg.profiles || {}
+      }
+    } else if (msg.type === 'lspConfigEditor:saved') {
+      notify('success', `Profile saved: ${msg.languageId}`, { duration: 2000 })
+    } else if (msg.type === 'lspConfigEditor:deleted') {
+      notify('info', `Profile deleted: ${msg.languageId}`, { duration: 2000 })
+    } else if (msg.type === 'lsp:testResult') {
+      // Show detailed LSP test result
+      console.log('[VTE-LSP] Test result received:', msg)
+
+      if (msg.success) {
+        // Show success toast (keep message short for toast display)
+        const shortMsg = msg.message?.substring(0, 50) || 'LSP test completed'
+        console.log('[VTE-LSP] Showing success toast:', shortMsg)
+        notify('success', shortMsg, { duration: 3000 })
+      } else {
+        // Show error toast
+        const errorMsg = msg.message?.substring(0, 50) || 'LSP test failed'
+        console.log('[VTE-LSP] Showing error toast:', errorMsg)
+        notify('error', errorMsg, { duration: 5000 })
+      }
     }
   })
 
@@ -150,15 +192,56 @@ export function useConfig() {
     send({ type: 'setReasoningLevel', level })
   }
 
+  function setupLsp() {
+    send({ type: 'lsp:setup' })
+  }
+
+  function testLsp() {
+    send({ type: 'lsp:test' })
+  }
+
+  function openConfigEditor() {
+    configEditorVisible.value = true
+    isConfigEditorInitializing = true
+    console.log('[VTE-UI] openConfigEditor, lspProfiles keys:', Object.keys(lspProfiles.value))
+    // Initialize config editor from already-loaded lsp profiles
+    lspConfigProfiles.value = { ...lspProfiles.value }
+    console.log('[VTE-UI] openConfigEditor, lspConfigProfiles keys:', Object.keys(lspConfigProfiles.value))
+    // Request fresh data for config editor (separate from lspProfiles broadcast)
+    send({ type: 'getLspConfigEditorData' })
+  }
+
+  function saveLspProfile(profile: LspProfile) {
+    send({ type: 'lspConfigEditor:save', profile })
+    lspConfigProfiles.value = { ...lspConfigProfiles.value, [profile.languageId]: profile }
+  }
+
+  function deleteLspProfile(languageId: string) {
+    send({ type: 'lspConfigEditor:delete', languageId })
+    const { [languageId]: _, ...rest } = lspConfigProfiles.value
+    lspConfigProfiles.value = rest
+  }
+
+  function addLspProfile(profile: LspProfile) {
+    console.log('[VTE-UI] addLspProfile:', profile.languageId, 'current keys:', Object.keys(lspConfigProfiles.value))
+    send({ type: 'lspConfigEditor:add', profile })
+    // Locally update so the UI refreshes immediately
+    lspConfigProfiles.value = { ...lspConfigProfiles.value, [profile.languageId]: profile }
+    console.log('[VTE-UI] addLspProfile after update, keys:', Object.keys(lspConfigProfiles.value))
+  }
+
   function init() {
     send({ type: 'getConfig' })
     send({ type: 'getPermissionConfig' })
+    send({ type: 'getLspProfiles' })
   }
 
   return {
-    configVisible, models, activeModelIndex,
+    configVisible, configEditorVisible, models, activeModelIndex,
     apiKey, apiBase, model, permissionConfig, reasoningLevel,
+    lspProfiles, lspConfigProfiles,
     toggleConfig, selectModel, addModel, updateModel, deleteModel, saveConfig, init,
-    updatePermissionConfig, setReasoningLevel,
+    updatePermissionConfig, setReasoningLevel, setupLsp, testLsp,
+    openConfigEditor, saveLspProfile, deleteLspProfile, addLspProfile,
   }
 }

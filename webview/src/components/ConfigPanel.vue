@@ -123,7 +123,53 @@
           </div>
 
           <!-- ═══════════════════════════════════════
-               Group 3: 生成参数
+               Group 3: LSP 配置
+               ═══════════════════════════════════════ -->
+          <div class="cfg-group">
+            <div class="cfg-group-header">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span>LSP 代码智能</span>
+              <span class="cfg-badge">按需调用</span>
+            </div>
+            <div class="cfg-group-body">
+              <div class="cfg-subsection">
+                <div class="cfg-subsection-label">已配置语言</div>
+                <div class="cfg-lsp-lang-list">
+                  <div v-for="(profile, langId) in lspProfiles" :key="langId" class="cfg-lsp-lang-item">
+                    <div class="cfg-lsp-lang-info">
+                      <span class="cfg-lsp-lang-name">{{ langId }}</span>
+                      <span class="cfg-lsp-lang-exts">{{ profile.fileExtensions.join(', ') }}</span>
+                    </div>
+                    <div class="cfg-lsp-tools">
+                      <label v-for="tool in profile.tools" :key="tool" class="cfg-lsp-tool-tag">
+                        {{ tool }}
+                      </label>
+                    </div>
+                  </div>
+                  <div v-if="Object.keys(lspProfiles).length === 0" class="cfg-lsp-empty">
+                    未检测到 LSP 配置。点击下方按钮自动检测。
+                  </div>
+                </div>
+              </div>
+              <div class="cfg-subsection">
+                <div class="cfg-subsection-label">测试 LSP</div>
+                <div class="cfg-lsp-test">
+                  <button class="cfg-lsp-test-btn" @click="$emit('lsp:setup')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 2v20M2 12h20"/></svg>
+                    Setup LSP
+                  </button>
+                  <button class="cfg-lsp-test-btn" @click="$emit('lsp:test')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    测试连接
+                  </button>
+                  <span class="cfg-lsp-test-hint">在对话中使用 lsp_goto_definition 等工具测试</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ═══════════════════════════════════════
+               Group 4: 生成参数
                ═══════════════════════════════════════ -->
           <div class="cfg-group">
             <div class="cfg-group-header">
@@ -182,6 +228,14 @@ import { PERMISSION_CATEGORIES } from '../composables/useConfig'
 import ModelSelector from './ModelSelector.vue'
 import Toast from './Toast.vue'
 
+interface LspProfile {
+  languageId: string
+  tools: string[]
+  strategy: string
+  fileExtensions: string[]
+  timeoutMs?: number
+}
+
 const props = defineProps<{
   visible: boolean
   models: ModelProfile[]
@@ -195,6 +249,7 @@ const props = defineProps<{
   topP: number
   maxTokens: number
   permissionConfig: PermissionConfig
+  lspProfiles: Record<string, LspProfile>
 }>()
 
 const emit = defineEmits<{
@@ -209,6 +264,8 @@ const emit = defineEmits<{
   'update:topP': [value: number]
   'update:maxTokens': [value: number]
   'update:permission': [config: PermissionConfig]
+  'lsp:setup': []
+  'lsp:test': []
 }>()
 
 const profileName = ref('')
@@ -422,6 +479,41 @@ function onSave() {
   cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
 .cfg-input-eye:hover { background: rgba(255,255,255,0.06); color: var(--vte-text); }
+
+/* ═══════════════════════════════════════
+   LSP Configuration
+   ═══════════════════════════════════════ */
+.cfg-lsp-lang-list {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.cfg-lsp-lang-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-radius: 8px;
+  background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04);
+}
+.cfg-lsp-lang-info { display: flex; flex-direction: column; gap: 2px; }
+.cfg-lsp-lang-name { font-size: 13px; font-weight: 500; color: var(--vte-text); }
+.cfg-lsp-lang-exts { font-size: 11px; color: var(--vte-text-muted); }
+.cfg-lsp-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.cfg-lsp-tool-tag {
+  padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 500;
+  background: rgba(99,102,241,0.1); color: #818cf8;
+}
+.cfg-lsp-empty {
+  font-size: 12px; color: var(--vte-text-muted); padding: 12px;
+  text-align: center; border: 1px dashed var(--vte-border); border-radius: 8px;
+}
+.cfg-lsp-test {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.cfg-lsp-test-btn {
+  padding: 8px 14px; border-radius: 8px; border: 1px solid var(--vte-border);
+  background: var(--vte-bg-elevated); color: var(--vte-text); font-size: 12px;
+  font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  transition: all 0.15s;
+}
+.cfg-lsp-test-btn:hover { border-color: var(--vte-primary); background: rgba(99,102,241,0.06); }
+.cfg-lsp-test-hint { font-size: 11px; color: var(--vte-text-muted); }
 
 /* ═══════════════════════════════════════
    Save Button

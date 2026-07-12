@@ -1,10 +1,35 @@
 /**
  * Search tools - grep, glob
+ *
+ * Uses HostAdapter when available, falls back to Node.js execSync.
  */
 
 import { ToolDefinition } from '../core/types'
 import { formatTextResult, formatErrorResult } from '../shared/protocol'
-import { execSync } from 'child_process'
+import { hasHost, getHost } from '../host/registry'
+
+async function runCommand(command: string, options?: { timeout?: number }): Promise<{ stdout: string; exitCode: number }> {
+  if (hasHost() && getHost().shell) {
+    const result = await getHost().shell!.execute(command, { timeout: options?.timeout || 10000 })
+    return { stdout: result.stdout, exitCode: result.exitCode }
+  }
+  const { execSync } = require('child_process')
+  try {
+    const stdout = execSync(command, {
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024,
+      timeout: options?.timeout || 10000,
+    })
+    return { stdout: stdout || '', exitCode: 0 }
+  } catch (err: any) {
+    return { stdout: '', exitCode: err.status || 1 }
+  }
+}
+
+async function commandExists(cmd: string): Promise<boolean> {
+  const { stdout, exitCode } = await runCommand(`which ${cmd}`, { timeout: 3000 })
+  return exitCode === 0 && stdout.trim().length > 0
+}
 
 export const grepTool: ToolDefinition = {
   name: 'grep',
@@ -23,8 +48,7 @@ export const grepTool: ToolDefinition = {
     const searchPath = (args.path as string) || '.'
     const include = args.include as string | undefined
 
-    // Try ripgrep first, fallback to grep -r
-    const hasRg = (() => { try { execSync('which rg', { stdio: 'ignore' }); return true } catch { return false } })()
+    const hasRg = await commandExists('rg')
 
     try {
       let cmd: string
@@ -36,17 +60,11 @@ export const grepTool: ToolDefinition = {
         cmd = `grep -rn --include='${include || '*'}' '${pattern}' ${searchPath} 2>/dev/null | head -100`
       }
 
-      const output = execSync(cmd, {
-        encoding: 'utf-8',
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      })
-      return formatTextResult(output.trim() || 'No matches found')
+      const { stdout, exitCode } = await runCommand(cmd)
+      if (exitCode === 1) return formatTextResult('No matches found')
+      return formatTextResult(stdout.trim() || 'No matches found')
     } catch (err: any) {
-      if (err.status === 1) {
-        return formatTextResult('No matches found')
-      }
-      return formatErrorResult(err.stderr || err.message)
+      return formatErrorResult(err.message)
     }
   },
 }
@@ -68,12 +86,8 @@ export const globTool: ToolDefinition = {
 
     try {
       const cmd = `find ${searchPath} -type f -name '${pattern.replace(/\*/g, '*').replace(/\?/g, '?')}' | head -100`
-      const output = execSync(cmd, {
-        encoding: 'utf-8',
-        timeout: 5000,
-        maxBuffer: 512 * 1024,
-      })
-      const files = output.trim().split('\n').filter(f => f.length > 0)
+      const { stdout } = await runCommand(cmd, { timeout: 5000 })
+      const files = stdout.trim().split('\n').filter(f => f.length > 0)
       return formatTextResult(files.length > 0 ? files.join('\n') : 'No files found')
     } catch (err: any) {
       return formatErrorResult(err.message)

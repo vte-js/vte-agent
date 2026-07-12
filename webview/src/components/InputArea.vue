@@ -22,6 +22,11 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
           </button>
         </VTooltip>
+        <VTooltip text="LSP 控制面板">
+          <button class="tool-btn" @click="$emit('openLsp')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </button>
+        </VTooltip>
         <ContextMenu :visible="showCtxMenu" :items="DEFAULT_CONTEXT_ITEMS" @select="requestContext" />
         <SlashCommand
           :visible="showSlashCmd"
@@ -63,8 +68,9 @@
         <textarea
           ref="textareaEl"
           v-model="text"
-          :placeholder="editRef ? '编辑消息...' : '输入 / 打开快捷指令，或 @ 附加文件上下文'"
+          :placeholder="dynamicPlaceholder"
           @keydown.enter.exact.prevent="onSend"
+          @keydown.tab.exact.prevent="onTabAccept"
           @input="onInput"
         ></textarea>
         <div class="inp-tool-bottom">
@@ -154,6 +160,7 @@ const props = defineProps<{
   models: ModelProfile[]
   activeModelIndex: number
   reasoningLevel: ReasoningLevel
+  nextStepSuggestion?: string
 }>()
 
 const emit = defineEmits<{
@@ -165,6 +172,7 @@ const emit = defineEmits<{
   saveModel: [index: number, profile: ModelProfile]
   deleteModel: [index: number]
   'update:reasoningLevel': [level: ReasoningLevel]
+  openLsp: []
 }>()
 
 const text = ref('')
@@ -176,6 +184,13 @@ const showCtxMenu = ref(false)
 const showSlashCmd = ref(false)
 const showReasoningPicker = ref(false)
 const slashCommands = ref<SlashCommandItem[]>([])
+
+// ── Tab to accept suggestion ──
+function onTabAccept() {
+  if (props.nextStepSuggestion && !text.value) {
+    text.value = props.nextStepSuggestion
+  }
+}
 
 // Close menu on click outside
 import { onMounted, onUnmounted } from 'vue'
@@ -202,6 +217,14 @@ const canSend = computed(() => {
 const reasoningLabel = computed(() => {
   const labels: Record<string, string> = { low: '低', medium: '中', high: '高' }
   return labels[props.reasoningLevel] || '中'
+})
+
+const dynamicPlaceholder = computed(() => {
+  if (props.busy) return 'AI 正在思考...'
+  if (props.editRef) return '编辑消息...'
+  const suggestion = props.nextStepSuggestion
+  if (suggestion) return `${suggestion}（按 Tab 采纳）`
+  return '输入 / 打开快捷指令，或 @ 附加文件上下文'
 })
 
 // Listen for file picker, git data, and skills data from extension host

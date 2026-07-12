@@ -17,6 +17,11 @@
           "id": "vte-agent-sidebar",
           "title": "VTE Agent",
           "icon": "resources/icon.svg"
+        },
+        {
+          "id": "vte-lsp-sidebar",
+          "title": "LSP Control",
+          "icon": "resources/lsp-icon.svg"
         }
       ]
     },
@@ -26,6 +31,12 @@
           "type": "webview",
           "id": "vte-agent.chat",
           "name": "VTE Agent"
+        }
+      ],
+      "vte-lsp-sidebar": [
+        {
+          "id": "vte-lsp-status",
+          "name": "LSP Status"
         }
       ]
     },
@@ -59,6 +70,35 @@
         "command": "vte-agent.openChat",
         "title": "VTE Agent: Open Chat",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "vteAgent.setupLsp",
+        "title": "VTE Agent: Setup LSP",
+        "icon": "$(symbol-event)"
+      },
+      {
+        "command": "vte-lsp.openConfigEditor",
+        "title": "VTE Agent: Open LSP Config Editor",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "vte-lsp.testLsp",
+        "title": "LSP: Test at Cursor",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "vte-lsp.clearCache",
+        "title": "LSP: Clear Cache",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "vte-lsp.refreshStatus",
+        "title": "LSP: Refresh Status",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "vte-lsp.showStatus",
+        "title": "LSP: Show Status Panel"
       }
     ],
     "menus": {
@@ -87,9 +127,35 @@
           "command": "vte-agent.clearChat",
           "when": "view == vte-agent.chat",
           "group": "navigation@5"
+        },
+        {
+          "command": "vte-lsp.openConfigEditor",
+          "when": "view == vte-lsp-status",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vte-lsp.testLsp",
+          "when": "view == vte-lsp-status",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vte-lsp.clearCache",
+          "when": "view == vte-lsp-status",
+          "group": "navigation@3"
+        },
+        {
+          "command": "vte-lsp.refreshStatus",
+          "when": "view == vte-lsp-status",
+          "group": "navigation@4"
         }
       ]
     },
+    "jsonValidation": [
+      {
+        "fileMatch": "**/.github/agent-lsp.json",
+        "url": "./schemas/agent-lsp.schema.json"
+      }
+    ],
     "configuration": {
       "title": "VTE Agent",
       "properties": {
@@ -107,6 +173,57 @@
           "type": "string",
           "default": "gpt-4",
           "description": "Model name"
+        },
+        "vteCode.models": {
+          "type": "array",
+          "default": [
+            {
+              "name": "MiMo v2.5",
+              "apiKey": "sk-cr6eamy65pfxcl85tdsff1rr1py9602h55qclwhb4a0a6ox0",
+              "apiBase": "https://api.xiaomimimo.com/v1",
+              "model": "mimo-v2.5"
+            }
+          ],
+          "description": "Model profiles"
+        },
+        "vteCode.activeModelIndex": {
+          "type": "number",
+          "default": 0,
+          "description": "Active model profile index"
+        },
+        "vteAgent.lsp.profiles": {
+          "type": "object",
+          "default": {},
+          "description": "LSP profiles configuration for each language",
+          "properties": {
+            "typescript": {
+              "type": "object",
+              "properties": {
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["definition", "references", "hover", "documentSymbol"]
+                  },
+                  "default": ["definition", "references", "hover", "documentSymbol"]
+                },
+                "strategy": {
+                  "type": "string",
+                  "enum": ["builtin", "direct"],
+                  "default": "builtin"
+                },
+                "fileExtensions": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "default": [".ts", ".tsx"]
+                },
+                "timeoutMs": {
+                  "type": "number",
+                  "default": 5000
+                }
+              }
+            }
+          }
         }
       }
     }

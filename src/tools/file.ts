@@ -1,11 +1,88 @@
 /**
  * File tools - read, edit, write, list
+ *
+ * Uses HostAdapter when available, falls back to Node.js fs/path.
  */
 
-import * as fs from 'fs'
-import * as path from 'path'
 import { ToolDefinition, ContextManager } from '../core/types'
 import { formatFileResult, formatTextResult, formatErrorResult } from '../shared/protocol'
+import { hasHost, getHost } from '../host/registry'
+
+// ── Helpers ──
+
+function resolvePath(filePath: string, context: ContextManager): string {
+  if (hasHost()) {
+    const root = getHost().workspace.getRoot()
+    if (root && !filePath.startsWith('/')) {
+      return `${root}/${filePath}`
+    }
+  }
+  return filePath
+}
+
+async function readFileContent(filePath: string): Promise<string> {
+  if (hasHost()) {
+    return getHost().fs.readFile(filePath)
+  }
+  const { readFileSync } = require('fs')
+  return readFileSync(filePath, 'utf-8')
+}
+
+async function writeFileContent(filePath: string, content: string): Promise<void> {
+  if (hasHost()) {
+    await getHost().fs.writeFile(filePath, content)
+    return
+  }
+  const fs = require('fs')
+  const path = require('path')
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, content, 'utf-8')
+}
+
+async function dirExists(dirPath: string): Promise<boolean> {
+  if (hasHost()) {
+    return getHost().fs.exists(dirPath)
+  }
+  const fs = require('fs')
+  try { fs.statSync(dirPath); return true } catch { return false }
+}
+
+async function readDir(dirPath: string): Promise<Array<{ name: string; isDirectory: boolean; size?: number }>> {
+  if (hasHost()) {
+    const host = getHost()
+    const names = await host.fs.readdir(dirPath)
+    const entries: Array<{ name: string; isDirectory: boolean; size?: number }> = []
+    for (const name of names) {
+      try {
+        const s = await host.fs.stat(`${dirPath}/${name}`)
+        entries.push({ name, isDirectory: s.type === 'directory', size: s.size })
+      } catch {
+        entries.push({ name, isDirectory: false })
+      }
+    }
+    return entries
+  }
+  const fs = require('fs')
+  const path = require('path')
+  const dirents = fs.readdirSync(dirPath, { withFileTypes: true })
+  return dirents.map((e: any) => {
+    if (e.isDirectory()) return { name: e.name, isDirectory: true }
+    try {
+      const stat = fs.statSync(path.join(dirPath, e.name))
+      return { name: e.name, isDirectory: false, size: stat.size }
+    } catch {
+      return { name: e.name, isDirectory: false }
+    }
+  })
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+}
+
+// ── Tools ──
 
 export const readTool: ToolDefinition = {
   name: 'read',
@@ -52,21 +129,16 @@ export const editTool: ToolDefinition = {
     const newStr = args.new_string as string
 
     try {
-      const fullPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(context.getSnapshot().projectIndex.workspaceRoot, filePath)
-
-      const content = fs.readFileSync(fullPath, 'utf-8')
+      const fullPath = resolvePath(filePath, context)
+      const content = await readFileContent(fullPath)
       if (!content.includes(oldStr)) {
         return formatErrorResult('old_string not found in file', filePath)
       }
       if (content.split(oldStr).length > 2) {
         return formatErrorResult('Multiple matches - provide more context', filePath)
       }
-
       const updated = content.replace(oldStr, newStr)
-      fs.writeFileSync(fullPath, updated, 'utf-8')
-
+      await writeFileContent(fullPath, updated)
       return formatTextResult(`OK: ${filePath}`)
     } catch (err: any) {
       return formatErrorResult(err.message, filePath)
@@ -90,13 +162,8 @@ export const writeTool: ToolDefinition = {
     const content = args.content as string
 
     try {
-      const fullPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(context.getSnapshot().projectIndex.workspaceRoot, filePath)
-
-      fs.mkdirSync(path.dirname(fullPath), { recursive: true })
-      fs.writeFileSync(fullPath, content, 'utf-8')
-
+      const fullPath = resolvePath(filePath, context)
+      await writeFileContent(fullPath, content)
       return formatTextResult(`OK: ${filePath}`)
     } catch (err: any) {
       return formatErrorResult(err.message, filePath)
@@ -117,32 +184,16 @@ export const listTool: ToolDefinition = {
     const dirPath = (args.path as string) || '.'
 
     try {
-      const fullPath = path.isAbsolute(dirPath)
-        ? dirPath
-        : path.join(context.getSnapshot().projectIndex.workspaceRoot, dirPath)
-
-      const entries = fs.readdirSync(fullPath, { withFileTypes: true })
-      const lines = entries.map(e => {
-        if (e.isDirectory()) return `${e.name}/`
-        try {
-          const stat = fs.statSync(path.join(fullPath, e.name))
-          return `${e.name}  (${formatSize(stat.size)})`
-        } catch {
-          return e.name
-        }
-      })
-
+      const fullPath = resolvePath(dirPath, context)
+      const entries = await readDir(fullPath)
+      const lines = entries.map(e =>
+        e.isDirectory ? `${e.name}/` : (e.size != null ? `${e.name}  (${formatSize(e.size)})` : e.name)
+      )
       return formatTextResult(lines.join('\n'))
     } catch (err: any) {
       return formatErrorResult(err.message, dirPath)
     }
   },
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
 }
 
 export const fileTools: ToolDefinition[] = [readTool, editTool, writeTool, listTool]

@@ -1,6 +1,9 @@
 /**
  * VTE Agent Tools - All tool implementations
  * Import from here to get all tools, or import individual tools as needed
+ *
+ * LSP tools are NOT included here — they are provided by the HostAdapter.
+ * Use host.lspTools to get LSP tools when available.
  */
 
 import { ToolDefinition } from '../core/types'
@@ -28,8 +31,9 @@ export { createTask, updateTask, deleteTask, getTask, listTasks, listAllTasks, g
 export type { Task } from './tasks'
 
 /**
- * All available tools (without checkpoint tools)
- * Checkpoint tools need to be registered after engine is created
+ * Core tools (without LSP and checkpoint tools).
+ * LSP tools are provided by HostAdapter.lspTools.
+ * Checkpoint tools need setCheckpointContext to be called first.
  */
 export const coreTools: ToolDefinition[] = [
   ...fileTools,
@@ -42,8 +46,8 @@ export const coreTools: ToolDefinition[] = [
 ]
 
 /**
- * All tools including checkpoint tools
- * Note: Checkpoint tools require setCheckpointContext to be called first
+ * All tools including checkpoint tools (but NOT LSP tools).
+ * LSP tools should be added via HostAdapter.
  */
 export const allTools: ToolDefinition[] = [
   ...coreTools,

@@ -139,15 +139,6 @@ export function checkLLMLaziness(
  * For plugin-auto mode: generate system prompt instruction based on complexity.
  */
 export function getComplexityInstruction(complexity: ComplexityResult): string {
-  if (!complexity.needsTasks) {
-    return ''
-  }
-
-  const reasons = complexity.reasons.slice(0, 3).join('、')
-
-  if (complexity.level === 'complex') {
-    return `\n\n[TASK INSTRUCTION] This is a complex task (score: ${complexity.score}/100, reasons: ${reasons}). You MUST use task_create to break it into subtasks first, then use task_update to track progress as you work. Do not skip task tracking.`
-  }
-
-  return `\n\n[TASK INSTRUCTION] This is a moderately complex task (score: ${complexity.score}/100, reasons: ${reasons}). Consider using task_create to track your progress if the work involves multiple steps.`
+  // Task tracking is always optional — LLM decides whether to use it
+  return ''
 }

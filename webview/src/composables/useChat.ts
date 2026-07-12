@@ -30,6 +30,7 @@ export interface ChatMessage {
   toolCalls?: ToolCallEvent[]
   images?: ImageAttachment[]
   context?: ContextAttachment[]
+  tasks?: Task[]
 }
 
 export interface TaskSnapshotMessage {
@@ -47,6 +48,9 @@ export function useChat(mode: () => string) {
   const messages = ref<FlowMessage[]>([])
   const busy = ref(false)
   let turnContentStarted = false
+  // Incremented on tool_call/tool_result so MessageList can auto-scroll
+  const toolUpdateTick = ref(0)
+  const nextStepSuggestion = ref('')
   const tokenStats = ref<TokenStatsData>({
     totalPrompt: 0,
     totalCompletion: 0,
@@ -79,13 +83,14 @@ export function useChat(mode: () => string) {
     }
 
     if (msg.type === 'thinking') {
-      // End previous turn's thinking
-      const prev = findLastAssistantMsg()
-      if (prev && prev.thinkingPhase) {
+      // Finalize previous streaming message (each turn gets its own)
+      const prev = findStreamingMsg()
+      if (prev) {
+        prev.streaming = false
         prev.thinkingPhase = false
       }
       turnContentStarted = false
-      // Create streaming message immediately so all state is per-message
+      // Create new streaming message for this turn
       messages.value.push({
         id: nextId++, role: 'assistant', text: '',
         type: 'chat', timestamp: new Date().toLocaleTimeString(),
@@ -120,6 +125,8 @@ export function useChat(mode: () => string) {
         } as ChatMessage)
       }
       busy.value = false
+    } else if (msg.type === 'nextStep') {
+      nextStepSuggestion.value = msg.suggestion || ''
     } else if (msg.type === 'error') {
       messages.value.push({
         id: nextId++, role: 'error', text: msg.text,
@@ -127,35 +134,46 @@ export function useChat(mode: () => string) {
       } as ChatMessage)
       busy.value = false
     } else if (msg.type === 'tool_call') {
-      const sm = findStreamingMsg()
-      if (sm) {
-        if (!sm.toolCalls) sm.toolCalls = []
-        sm.toolCalls.push({
+      // Create a separate message for each tool call so it appears inline in the flow
+      messages.value.push({
+        id: nextId++, role: 'assistant', text: '',
+        type: 'chat', timestamp: new Date().toLocaleTimeString(),
+        toolCalls: [{
           id: msg.toolCallId,
           name: msg.name,
           arguments: msg.arguments,
           status: 'running',
-        })
-      }
+        }],
+      } as ChatMessage)
+      toolUpdateTick.value++
     } else if (msg.type === 'tool_result') {
-      const sm = findStreamingMsg()
-      if (sm?.toolCalls) {
-        const tc = sm.toolCalls.find(t => t.id === msg.toolCallId)
-        if (tc) {
-          tc.status = msg.elapsed < 0 ? 'error' : 'done'
-          tc.result = msg.result
-          tc.elapsed = Math.abs(msg.elapsed)
+      // Find the tool call message by toolCallId and update its status
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        const m = messages.value[i] as ChatMessage
+        if (m.type === 'chat' && m.role === 'assistant' && m.toolCalls) {
+          const tc = m.toolCalls.find(t => t.id === msg.toolCallId)
+          if (tc) {
+            tc.status = msg.elapsed < 0 ? 'error' : 'done'
+            tc.result = msg.result
+            tc.elapsed = Math.abs(msg.elapsed)
+            break
+          }
         }
       }
+      toolUpdateTick.value++
     } else if (msg.type === 'cleared') {
       messages.value = []
       tokenStats.value = { totalPrompt: 0, totalCompletion: 0, totalTokens: 0, totalCost: 0, requestCount: 0, perModel: {} }
     } else if (msg.type === 'tasks') {
-      messages.value.push({
-        id: nextId++,
-        type: 'task_snapshot',
-        tasks: msg.tasks,
-      } as TaskSnapshotMessage)
+      // Find the streaming message (has text content) to attach tasks to
+      const sm = findStreamingMsg()
+      if (sm) {
+        sm.tasks = msg.tasks
+      } else {
+        // Fallback: find last assistant message with text
+        const last = [...messages.value].reverse().find(m => (m as ChatMessage).role === 'assistant' && (m as ChatMessage).text) as ChatMessage | undefined
+        if (last) last.tasks = msg.tasks
+      }
     } else if (msg.type === 'tokenStats') {
       tokenStats.value = {
         totalPrompt: msg.totalPrompt,
@@ -183,6 +201,7 @@ export function useChat(mode: () => string) {
   })
 
   function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number, images?: ImageAttachment[], context?: ContextAttachment[]) {
+    nextStepSuggestion.value = '' // Clear suggestion when user sends new message
     messages.value.push({
       id: nextId++,
       role: 'user',
@@ -240,5 +259,5 @@ export function useChat(mode: () => string) {
     send({ type: 'feedback', messageId, rating, comment, userMessage: userText, assistantMessage: msg.text.slice(0, 500) })
   }
 
-  return { messages, busy, tokenStats, showTokenStats, sendChat, clear, stop, executePlan, deleteMessage, resendMessage, sendFeedback }
+  return { messages, busy, tokenStats, showTokenStats, toolUpdateTick, nextStepSuggestion, sendChat, clear, stop, executePlan, deleteMessage, resendMessage, sendFeedback }
 }

@@ -25,6 +25,7 @@ import { gitTool } from './git';
 import { webfetchTool } from './webfetch';
 import { taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool } from './task-tools';
 import { checkpointSaveTool, checkpointListTool, checkpointRestoreTool, checkpointDeleteTool, checkpointDiffTool, checkpointLogTool, setCheckpointContext } from './checkpoint-tools';
+import { questionTool } from '../tools/question';
 import { ShadowGit } from './shadow-git';
 import { registerTools, getAllTools } from './registry';
 import { TaskMode, analyzeComplexity, checkLLMLaziness, getComplexityInstruction } from './complexity';
@@ -34,7 +35,7 @@ import { PermissionConfig, DEFAULT_PERMISSION_CONFIG, getPermissionLevel, TOOL_C
 export type AgentMode = 'plan' | 'code';
 
 // Register all tools
-registerTools([...allTools, bashTool, grepTool, globTool, diagnosticsTool, gitTool, webfetchTool, taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool, checkpointSaveTool, checkpointListTool, checkpointRestoreTool, checkpointDeleteTool, checkpointDiffTool, checkpointLogTool]);
+registerTools([...allTools, bashTool, grepTool, globTool, diagnosticsTool, gitTool, webfetchTool, taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool, checkpointSaveTool, checkpointListTool, checkpointRestoreTool, checkpointDeleteTool, checkpointDiffTool, checkpointLogTool, questionTool]);
 
 const READ_ONLY_TOOL_NAMES = ['read', 'search', 'list', 'grep', 'glob', 'diagnostics', 'git'];
 
@@ -57,6 +58,14 @@ export class AgentEngine {
   onViewUpdate?: (update: Record<string, unknown>) => void;
   private permissionConfig: PermissionConfig = { ...DEFAULT_PERMISSION_CONFIG };
   private pendingPermissionResolve?: (decision: 'allow_once' | 'always_allow' | 'deny') => void;
+  // Track tools denied in this session to avoid repeated permission requests
+  private deniedTools: Set<string> = new Set();
+  private pendingQuestionResolve?: (answer: string) => void;
+  private _questionCancelled = false;
+  private _questionSkipped = false;
+  private _enforceRetryCount = 0;
+  private _toolCallCount = 0;
+  private static readonly MAX_TOOL_CALLS = 100;
 
   constructor(
     context: ContextManager,
@@ -124,6 +133,34 @@ export class AgentEngine {
           this.permissionConfig[category] = 'allow';
         }
       }
+    }
+  }
+
+  // ── Question (User Input) ──
+
+  requestQuestion(
+    question: string,
+    options: Array<{ label: string; description?: string }>,
+    multiple: boolean,
+    recommended?: string
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      this.pendingQuestionResolve = resolve;
+      this.onViewUpdate?.({
+        type: 'question_request',
+        requestId: `q_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        question,
+        options,
+        multiple,
+        recommended,
+      });
+    });
+  }
+
+  resolveQuestion(answer: string) {
+    if (this.pendingQuestionResolve) {
+      this.pendingQuestionResolve(answer);
+      this.pendingQuestionResolve = undefined;
     }
   }
 
@@ -227,6 +264,10 @@ export class AgentEngine {
   async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string; content: string }>): Promise<string> {
     // Create abort controller for this request
     this.abortController = new AbortController();
+    this._questionCancelled = false;
+    this._enforceRetryCount = 0;
+    this._toolCallCount = 0;
+    // _questionSkipped persists across turns — only reset by new chat session
 
     // Ensure context index is built before any tool calls
     if (!this.context.getSnapshot().projectIndex) {
@@ -291,6 +332,9 @@ export class AgentEngine {
     // Trim history to save tokens (keep recent messages, summarize old ones)
     this.trimHistory();
 
+    // Signal new thinking phase to webview
+    this.onViewUpdate?.({ type: 'thinking_start' });
+
     const startTime = Date.now();
     const response = await this.callLLM(systemContent, temperature, topP, maxTokens);
     const latencyMs = Date.now() - startTime;
@@ -321,33 +365,33 @@ export class AgentEngine {
       const toolResults = await this.executeToolCalls(assistantMessage.tool_calls);
       // Compress large tool results to save tokens
       const compressedResults = this.compressToolResults(toolResults);
-      this.messages.push({
-        role: 'tool',
-        content: compressedResults.map(r => r.content).join('\n\n'),
-      });
 
-      // LLM-auto mode: enforce task tools if LLM skipped them on complex tasks
-      if (this.taskMode === 'llm-auto' && detectedComplexity && detectedComplexity.needsTasks) {
-        const toolNames = assistantMessage.tool_calls.map(tc => tc.function.name);
-        const usedTaskTools = toolNames.some(t => t.startsWith('task_'));
-
-        if (!usedTaskTools && detectedComplexity.level === 'complex') {
-          console.log(`[VTE] ENFORCE: LLM skipped tasks on complex task (score=${detectedComplexity.score}). Forcing task creation.`);
-
-          // Remove the LLM's lazy response and tool calls from history
-          this.messages.pop(); // remove tool results
-          this.messages.pop(); // remove assistant tool calls
-
-          // Inject mandatory task instruction as system-level directive
-          this.messages.push({
-            role: 'user',
-            content: `[ENFORCEMENT] You skipped task tracking on a complex task (score: ${detectedComplexity.score}/100). You MUST now call task_create for each subtask before proceeding with any other work. This is mandatory.`,
-          });
-
-          // Re-request with enforcement active
-          return this.chat('', temperature, topP, maxTokens);
+      // Push tool results with tool_call_id for each tool call
+      if (assistantMessage.tool_calls) {
+        console.log(`[VTE] Pushing ${assistantMessage.tool_calls.length} tool results`);
+        for (let i = 0; i < assistantMessage.tool_calls.length; i++) {
+          const tc = assistantMessage.tool_calls[i];
+          const result = compressedResults[i];
+          if (result) {
+            console.log(`[VTE] Tool result: ${tc.function.name} (${result.content.length} chars)`);
+            this.messages.push({
+              role: 'tool',
+              content: result.content,
+              tool_call_id: tc.id,
+            });
+          }
         }
+        console.log(`[VTE] Total messages after tool results: ${this.messages.length}`);
       }
+
+      // Track tool calls and enforce limit
+      this._toolCallCount += assistantMessage.tool_calls.length;
+      if (this._toolCallCount >= AgentEngine.MAX_TOOL_CALLS) {
+        console.log(`[VTE] MAX_TOOL_CALLS reached (${this._toolCallCount}), stopping loop`);
+        return `达到最大工具调用次数 (${AgentEngine.MAX_TOOL_CALLS})，已停止执行。`;
+      }
+
+      // LLM-auto mode: no longer force task tracking — let LLM decide
 
       return this.chat('', temperature, topP, maxTokens);
     }
@@ -379,11 +423,18 @@ export class AgentEngine {
         // Handle multimodal content (text + images)
         const content = m.content;
         if (typeof content === 'string') {
+          // Include tool_call_id for tool role messages
+          if (m.role === 'tool' && m.tool_call_id) {
+            return { role: m.role, content, tool_call_id: m.tool_call_id };
+          }
           return { role: m.role, content };
         }
         // Already multimodal format (array of parts)
         const parts = content as unknown as any[];
         console.log(`[VTE][DEBUG] Multimodal message: role=${m.role} parts=${parts.length}`);
+        if (m.role === 'tool' && m.tool_call_id) {
+          return { role: m.role, content, tool_call_id: m.tool_call_id };
+        }
         return { role: m.role, content };
       }),
     ];
@@ -552,7 +603,18 @@ export class AgentEngine {
       }
 
       // ── Permission check (only in code mode) ──
-      if (this.mode === 'code') {
+      // question tool is user input — always allowed, no permission needed
+      if (this.mode === 'code' && tc.function.name !== 'question') {
+        // Check if this tool was previously denied in this session
+        const toolKey = `${tc.function.name}:${JSON.stringify(args)}`;
+        if (this.deniedTools.has(toolKey)) {
+          console.log(`[VTE] Tool previously denied, skipping: ${tc.function.name}`);
+          this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
+          this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '此操作已被拒绝，请尝试其他方式', elapsed: -1 });
+          results.push({ type: 'error', content: `此操作已被用户拒绝，请不要重复请求相同的权限。如需执行此操作，请在权限设置中修改，或尝试其他方式完成任务。` });
+          continue;
+        }
+
         const permissionLevel = getPermissionLevel(tc.function.name, this.permissionConfig);
         if (permissionLevel === 'deny') {
           console.log(`[VTE] Permission denied: ${tc.function.name}`);
@@ -566,12 +628,56 @@ export class AgentEngine {
           const decision = await this.requestPermission(tc.function.name, args);
           if (decision === 'deny') {
             console.log(`[VTE] Permission denied by user: ${tc.function.name}`);
+            // Track this denied tool to avoid repeated requests
+            this.deniedTools.add(toolKey);
             this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
             this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '用户拒绝执行', elapsed: -1 });
             results.push({ type: 'error', content: `用户拒绝执行: ${tc.function.name}` });
             continue;
           }
+          // If user chose "always allow", remove from denied tools (in case it was previously denied)
+          if (decision === 'always_allow') {
+            this.deniedTools.delete(toolKey);
+          }
         }
+      }
+
+      // ── Question tool interception ──
+      if (tc.function.name === 'question') {
+        // Block retry after skip (persists across turns) or cancel (within same turn)
+        if (this._questionSkipped || this._questionCancelled) {
+          this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+          this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: this._questionSkipped ? '用户已跳过所有提问' : '用户已取消，不再提问', elapsed: 0 });
+          results.push({ type: 'error', content: '用户已取消提问。请不要重试 question 工具，继续执行其他任务。' });
+          continue;
+        }
+        console.log(`[VTE] Question tool: asking user`);
+        this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+        const answer = await this.requestQuestion(
+          args.question as string,
+          (args.options as Array<{ label: string; description?: string }>) || [],
+          (args.multiple as boolean) || false,
+          args.recommended as string | undefined
+        );
+        if (!answer || answer === '__skip__') {
+          this._questionCancelled = true;
+        }
+        if (answer === '__skip__') {
+          this._questionSkipped = true;
+        }
+        const displayResult = answer === '__skip__'
+          ? 'User chose to skip all questions'
+          : answer
+            ? `User selected: ${answer}`
+            : 'User cancelled';
+        this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: displayResult, elapsed: 0 });
+        results.push({
+          type: 'text',
+          content: answer === '__skip__'
+            ? '用户选择跳过所有问题。请不要再调用 question 工具，直接执行任务。'
+            : answer || 'User chose not to answer. Proceed without this input.',
+        });
+        continue;
       }
 
       this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
@@ -617,6 +723,9 @@ export class AgentEngine {
 
   clearHistory(): void {
     this.messages = [];
+    this.deniedTools.clear();
+    this._questionSkipped = false;
+    this._questionCancelled = false;
   }
 
   setModel(model: string): void {
