@@ -15,6 +15,7 @@ import { gitTool } from './git'
 import { webfetchTool } from './webfetch'
 import { taskTools } from './tasks'
 import { checkpointTools, setCheckpointContext } from './checkpoint'
+import { getContextTool } from '../agent/context-tool'
 
 // Re-export individual tools
 export { readTool, editTool, writeTool, listTool, fileTools } from './file'
@@ -52,4 +53,5 @@ export const coreTools: ToolDefinition[] = [
 export const allTools: ToolDefinition[] = [
   ...coreTools,
   ...checkpointTools,
+  getContextTool,
 ]

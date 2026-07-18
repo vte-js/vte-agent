@@ -15,6 +15,7 @@ import { getCodeIntelligenceService, getConfigurationResolver } from './lsp';
 import { setHost, VSCodeHostAdapter, VSCodeMessaging } from '../host';
 import { registerTools } from '../core/registry';
 import { AgentPool, AgentInstance } from '../agent/agent-pool';
+import { AgentContextSystem } from '../agent/context-system';
 import { WorkOrderPool, WorkOrder } from '../agent/work-order';
 import { Scheduler, ScheduleConfig } from '../agent/scheduler';
 import { AgentCommunication } from '../agent/agent-communication';
@@ -37,11 +38,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private currentSessionId?: string;
   private mode: AgentMode = 'code';
   private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
+  /** Sub-agent work-order timeout in seconds (host-agnostic config, surfaced in our own ConfigPanel, not VSCode native settings). */
+  private subAgentTimeout = 300;
+  private forceMultiAgent = false;
+
+  /**
+   * Single source of truth for the active LLM credentials.
+   *
+   * Derived purely from the model-profile list (`vteCode.models` +
+   * `vteCode.activeModelIndex`). The legacy flat keys
+   * (`vteCode.apiKey/apiBase/model`) were removed from the config schema to
+   * fully decouple from VSCode's native settings — every consumer now goes
+   * through this helper instead of reading those keys.
+   */
+  private getActiveCredentials(): { model: string; apiKey: string; apiBase: string } {
+    const config = vscode.workspace.getConfiguration('vteCode');
+    const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string }>>('models', []);
+    const idx = config.get<number>('activeModelIndex', 0);
+    const active = models[idx] || models[0];
+    return {
+      model: active?.model || 'gpt-4',
+      apiKey: active?.apiKey || '',
+      apiBase: active?.apiBase || 'https://api.openai.com/v1',
+    };
+  }
   // Multi-agent state
   private agentPool?: AgentPool;
   private workOrderPool?: WorkOrderPool;
   private scheduler?: Scheduler;
   private agentCommunication?: AgentCommunication;
+  /** One-shot unsubscriber for the auto-delegation completion watcher. */
+  private delegationWatchUnsub?: () => void;
   // Track chat history for cross-webview sync
   private chatHistory: Array<{
     id: number;
@@ -190,11 +217,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.postMessage({ type: 'cleared' });
           log('History cleared');
           break;
-        case 'saveConfig':
-          await this.saveConfig(message.apiKey, message.apiBase, message.model);
-          break;
         case 'saveModels':
-          await this.saveModels(message.models, message.activeModelIndex);
+          await this.saveModels(message.models, message.activeModelIndex, message.subAgentTimeout, message.forceMultiAgent);
           break;
         case 'switchModel':
           await this.switchModel(message.index);
@@ -871,9 +895,8 @@ Example usage here
     }
 
     try {
-      // Get current model from config
-      const config = vscode.workspace.getConfiguration('vteCode');
-      const model = config.get<string>('model', 'unknown');
+      // Get current model from the active profile
+      const model = this.getActiveCredentials().model;
 
       const session = await sm.createSession(name, model);
       this.currentSessionId = session.id;
@@ -1083,9 +1106,8 @@ Example usage here
       // Get token usage
       const stats = getSessionStats();
 
-      // Get model from config
-      const config = vscode.workspace.getConfiguration('vteCode');
-      const model = config.get<string>('model', 'unknown');
+      // Get model from the active profile
+      const model = this.getActiveCredentials().model;
 
       await sm.autoSave(this.currentSessionId, {
         messages,
@@ -1124,7 +1146,7 @@ Example usage here
       log(`[DEBUG] No currentSessionId, attempting auto-create session`);
       const sm = this.getSessionManager();
       if (sm) {
-        const sessionModel = model || vscode.workspace.getConfiguration('vteCode').get<string>('model', 'unknown');
+        const sessionModel = model || this.getActiveCredentials().model;
         log(`[DEBUG] Session manager found, creating session with model=${sessionModel}`);
         try {
           const session = await sm.createSession(undefined, sessionModel);
@@ -1143,6 +1165,25 @@ Example usage here
       log(`[DEBUG] Using existing session: ${this.currentSessionId}`);
     }
 
+    // ── Auto-delegation: route complex requests to the multi-agent system ──
+    // A lightweight router LLM decides whether the request needs several
+    // specialized agents (dev/test/review/doc). If so, we decompose, run
+    // the sub-agents in parallel, then synthesize their results back into
+    // THIS main chat — instead of answering directly.
+    //
+    // Set vteCode.forceMultiAgent=true in settings to bypass the router and
+    // delegate every message (useful for testing / debugging).
+    const forceDelegation = this.forceMultiAgent;
+    if (forceDelegation || await this.shouldDelegate(text)) {
+      if (!forceDelegation) {
+        log(`[VTE] Auto-delegating request to multi-agent system`);
+      } else {
+        log(`[VTE] Force-delegating request to multi-agent system (forceMultiAgent=on)`);
+      }
+      await this.delegateToMultiAgent(text, model);
+      return;
+    }
+
     if (!this.engine) {
       log(`[DEBUG] No engine, creating new one`);
       const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -1152,9 +1193,7 @@ Example usage here
         return;
       }
       const config = vscode.workspace.getConfiguration('vteCode');
-      const apiKey = config.get<string>('apiKey', '');
-      const apiBase = config.get<string>('apiBase', 'https://api.openai.com/v1');
-      const cfgModel = config.get<string>('model', 'gpt-4');
+      const { apiKey, apiBase, model: cfgModel } = this.getActiveCredentials();
       log(`[DEBUG] Config: apiKey=${apiKey ? '***set***' : 'EMPTY'} apiBase=${apiBase} cfgModel=${cfgModel} workspace=${workspaceRoot}`);
       if (!apiKey) {
         this.postMessage({ type: 'showSettings' });
@@ -1365,27 +1404,20 @@ Example usage here
     }
   }
 
-  private async saveConfig(apiKey: string, apiBase: string, model: string) {
-    const config = vscode.workspace.getConfiguration('vteCode');
-    await config.update('apiKey', apiKey, vscode.ConfigurationTarget.Global);
-    await config.update('apiBase', apiBase, vscode.ConfigurationTarget.Global);
-    await config.update('model', model, vscode.ConfigurationTarget.Global);
-    this.engine = undefined;
-    log(`Config saved: model=${model} base=${apiBase}`);
-    this.postMessage({ type: 'configSaved' });
-  }
-
-  private async saveModels(models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>, activeModelIndex: number) {
+  private async saveModels(models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>, activeModelIndex: number, subAgentTimeout?: number, forceMultiAgent?: boolean) {
     const config = vscode.workspace.getConfiguration('vteCode');
     await config.update('models', models, vscode.ConfigurationTarget.Global);
     await config.update('activeModelIndex', activeModelIndex, vscode.ConfigurationTarget.Global);
-
-    // Also update legacy single-model config for backwards compatibility
-    const active = models[activeModelIndex];
-    if (active) {
-      await config.update('apiKey', active.apiKey, vscode.ConfigurationTarget.Global);
-      await config.update('apiBase', active.apiBase, vscode.ConfigurationTarget.Global);
-      await config.update('model', active.model, vscode.ConfigurationTarget.Global);
+    // Persist host-agnostic config (sub-agent timeout). It lives in our
+    // own config bucket, NOT in the native settings schema, so it never
+    // shows in the VSCode Settings UI — other hosts persist it elsewhere.
+    if (typeof subAgentTimeout === 'number') {
+      this.subAgentTimeout = subAgentTimeout;
+      await config.update('subAgentTimeout', subAgentTimeout, vscode.ConfigurationTarget.Global);
+    }
+    if (typeof forceMultiAgent === 'boolean') {
+      this.forceMultiAgent = forceMultiAgent;
+      await config.update('forceMultiAgent', forceMultiAgent, vscode.ConfigurationTarget.Global);
     }
 
     this.engine = undefined;
@@ -1399,11 +1431,6 @@ Example usage here
 
     const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
     const active = models[index];
-    if (active) {
-      await config.update('apiKey', active.apiKey, vscode.ConfigurationTarget.Global);
-      await config.update('apiBase', active.apiBase, vscode.ConfigurationTarget.Global);
-      await config.update('model', active.model, vscode.ConfigurationTarget.Global);
-    }
 
     this.engine = undefined;
     log(`Switched to model: ${active?.name || index}`);
@@ -1677,7 +1704,7 @@ Example usage here
     const sm = this.getSessionManager();
     if (sm) {
       try {
-        const model = vscode.workspace.getConfiguration('vteCode').get<string>('model', 'unknown');
+        const model = this.getActiveCredentials().model;
         const session = await sm.createSession(undefined, model);
         this.currentSessionId = session.id;
         this.chatHistory = [];
@@ -1703,20 +1730,22 @@ Example usage here
     const config = vscode.workspace.getConfiguration('vteCode');
     const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
     const activeModelIndex = config.get<number>('activeModelIndex', 0);
+    // Host-agnostic config: read from our own config bucket (NOT a native
+    // settings schema entry, so it never appears in the VSCode Settings UI).
+    this.subAgentTimeout = config.get<number>('subAgentTimeout', 300);
+    this.forceMultiAgent = config.get<boolean>('forceMultiAgent', false);
 
     this.postMessage({
       type: 'configData',
       models: models.length > 0 ? models : [{
         name: 'Default',
-        apiKey: config.get<string>('apiKey', ''),
-        apiBase: config.get<string>('apiBase', 'https://api.openai.com/v1'),
-        model: config.get<string>('model', 'gpt-4'),
+        apiKey: '',
+        apiBase: 'https://api.openai.com/v1',
+        model: 'gpt-4',
       }],
       activeModelIndex: activeModelIndex,
-      // Legacy fields for backwards compatibility
-      apiKey: config.get<string>('apiKey', ''),
-      apiBase: config.get<string>('apiBase', 'https://api.openai.com/v1'),
-      model: config.get<string>('model', 'gpt-4'),
+      subAgentTimeout: this.subAgentTimeout,
+      forceMultiAgent: this.forceMultiAgent,
     });
     log(`Config sent: ${models.length} model profiles`);
   }
@@ -1815,9 +1844,6 @@ Example usage here
     this.agentCommunication = new AgentCommunication();
     this.agentPool = new AgentPool(host, this.workOrderPool, this.agentCommunication);
 
-    // Initialize agent pool with communication
-    this.agentPool = new AgentPool(host, this.workOrderPool, this.agentCommunication);
-
     // Set up scheduler with default config
     const scheduleConfig: ScheduleConfig = {
       mode: 'pool',
@@ -1831,6 +1857,9 @@ Example usage here
       this.postMessage({ type: 'multiAgent:agentUpdate', agentId, update });
       this.pushAgentStatuses();
     };
+    // Auto-provisioned agents (spawned by the scheduler for parallelism)
+    // need to show up in the dashboard immediately.
+    this.agentPool.onAgentCreated = () => this.pushAgentStatuses();
 
     // Forward work order events to webview
     this.workOrderPool.onEvent((event) => {
@@ -1864,14 +1893,14 @@ Example usage here
       return;
     }
 
-    // Use provided config, fallback to global config
-    const config = vscode.workspace.getConfiguration('vteCode');
+    // Use provided config, falling back to the active model profile.
+    const creds = this.getActiveCredentials();
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
 
     const agent = this.agentPool.createAgent(role, {
-      model: model || config.get<string>('model', 'gpt-4'),
-      apiKey: apiKey || config.get<string>('apiKey', ''),
-      apiBase: apiBase || config.get<string>('apiBase', 'https://api.openai.com/v1'),
+      model: model || creds.model,
+      apiKey: apiKey || creds.apiKey,
+      apiBase: apiBase || creds.apiBase,
       ...(api ? { api: api as 'chat' | 'responses' } : {}),
       ...(thinkingStyle ? { thinkingStyle: thinkingStyle as 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' } : {}),
       ...(reasoningLevel ? { reasoningLevel: reasoningLevel as 'low' | 'medium' | 'high' } : {}),
@@ -1879,7 +1908,7 @@ Example usage here
       workspaceRoot,
     });
 
-    const agentApiKey = apiKey || config.get<string>('apiKey', '');
+    const agentApiKey = apiKey || creds.apiKey;
     if (!agentApiKey) {
       this.postMessage({ type: 'toast', level: 'warning', text: `${role.name} 已创建，但未配置 API Key。请在设置中配置。` });
     } else {
@@ -1913,6 +1942,23 @@ Example usage here
   }
 
   /**
+   * Populate the dedicated AgentContextSystem from the MAIN agent's
+   * current knowledge (project index + already-read files). Sub-agents then
+   * retrieve this on demand via the `get_context` tool — we do NOT paste
+   * it into their prompts (that would multiply tokens across every parallel
+   * agent). The shared, cross-agent completed-work log lives in the system
+   * too and is fed by AgentPool as sub-agents finish.
+   */
+  private async populateContextSystem(): Promise<void> {
+    const sys = AgentContextSystem.instance
+    sys.reset()
+    const index = await this.engine?.ensureProjectIndex() ?? null
+    sys.setProjectIndex(index)
+    sys.setMainReadFiles(this.engine?.getContextReadFiles() ?? [])
+    log('[VTE] AgentContextSystem populated (index=' + (index ? 'yes' : 'no') + ', readFiles=' + (this.engine?.getContextReadFiles()?.length ?? 0) + ')')
+  }
+
+  /**
    * Phase 3 — PM autonomous decomposition.
    * The PM agent analyzes the high-level request and breaks it into
    * WorkOrders; they are pushed and the scheduler is started so the
@@ -1926,10 +1972,18 @@ Example usage here
     this.initMultiAgent();
     if (!this.scheduler || !this.workOrderPool) return;
 
-    const config = vscode.workspace.getConfiguration('vteCode');
-    const model = config.get<string>('model', 'gpt-4');
-    const apiKey = config.get<string>('apiKey', '');
-    const apiBase = config.get<string>('apiBase', 'https://api.openai.com/v1');
+    const { model, apiKey, apiBase } = this.getActiveCredentials();
+
+    // Forward the active LLM config so auto-provisioned sub-agents get a
+    // working provider instead of an empty one (which 401s every call).
+    this.agentPool?.setLlmConfig({ model, apiKey, apiBase });
+    const subAgentTimeoutSec = this.subAgentTimeout;
+    this.agentPool?.setDefaultTimeout(subAgentTimeoutSec * 1000);
+    // Populate the dedicated AgentContextSystem so PM + sub-agents can
+    // retrieve project context on demand via the get_context tool (instead
+    // of having it pasted into every prompt — token-efficient, opencode
+    // style).
+    await this.populateContextSystem();
 
     this.postMessage({ type: 'toast', level: 'info', text: 'PM 正在拆解需求…' });
     let orders;
@@ -1941,7 +1995,9 @@ Example usage here
     }
 
     this.pushWorkOrders();
-    // Start the scheduler so idle role agents pick up the new orders.
+    // Start the scheduler in parallel mode so the (auto-provisioned) role
+    // agents run decomposed tasks concurrently instead of one at a time.
+    (this.scheduler as any).config.mode = 'parallel';
     this.scheduler.start();
 
     this.postMessage({
@@ -1950,6 +2006,277 @@ Example usage here
       text: `PM 已拆解为 ${orders.length} 个子任务，开始执行`,
     });
     log(`PM decomposed request into ${orders.length} work orders`);
+  }
+
+  /**
+   * Build a throwaway AgentEngine (no tools) wired with the active model
+   * profile's protocol / thinking style. Used for the cheap routing decision
+   * and for the final result synthesis.
+   */
+  private buildAgentEngine(
+    model: string, apiKey: string, apiBase: string,
+    reasoningLevel: 'low' | 'medium' | 'high' = 'medium',
+  ): AgentEngine {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+    const ctx = new VTEContextManager(workspaceRoot);
+    const engine = new AgentEngine(ctx, model, apiKey, apiBase, workspaceRoot);
+    const config = vscode.workspace.getConfiguration('vteCode');
+    const profiles = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
+    const activeIdx = config.get<number>('activeModelIndex', 0);
+    const activeProfile = profiles[activeIdx];
+    const resolvedModel = activeProfile?.model || model;
+    const resolvedBase = activeProfile?.apiBase || apiBase;
+    const resolvedProtocol = resolveApiProtocol(activeProfile?.api, resolvedModel, resolvedBase);
+    engine.setApiProtocol(resolvedProtocol);
+    engine.setThinkingStyle(activeProfile?.thinkingStyle || 'auto');
+    engine.setReasoningLevel(reasoningLevel);
+    engine.setAllowedTools([]);
+    return engine;
+  }
+
+  /**
+   * Lightweight router: decide whether a user request needs multiple
+   * specialized agents (dev/test/review/doc). A short LLM call with no
+   * tools returns YES/NO. Trivial one-liners skip the call entirely.
+   */
+  private async shouldDelegate(text: string): Promise<boolean> {
+    if (!text || text.trim().length < 12) return false;
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) return false;
+    const { model, apiKey, apiBase } = this.getActiveCredentials();
+    if (!apiKey) return false;
+    try {
+      const router = this.buildAgentEngine(model, apiKey, apiBase, 'low');
+      const raw = await router.chat(
+        `你是路由判断器。判断下列用户需求是否需要多个专业 Agent 协作完成（涉及编写/修改代码→dev、编写并运行测试→test、代码审查→review、编写文档→doc 等）。\n只回复一个英文单词 YES 或 NO，不要解释，不要使用中文。\n\n需求：${text}`,
+        0, // temperature 0 → 确定性判定，降低模型"自由发挥"概率
+      );
+      const lower = raw.trim().toLowerCase();
+      log(`[VTE] Routing decision raw: "${lower}"`);
+      // 1) 明确否定信号 → 不委派（优先，避免误判）
+      if (/(^|\b)(no|否|不|无需|不必|不用|不要|单个|一个 ?agent|直接回答|不需要)/.test(lower)) return false;
+      // 2) 英文 YES 开头 → 委派
+      if (/^\s*yes\b/.test(lower)) return true;
+      // 3) 中文明确肯定 且 含多角色信号 → 委派（兼容中文模型）
+      if (/^(是|需要|建议|推荐|可以|应当|应该|可)/.test(lower) && /(多|协作|拆分|分解|子任务|子 ?agent|分别|各自|多个)/.test(lower)) return true;
+      return false;
+    } catch (err: any) {
+      log(`[VTE] Routing decision failed, falling back to direct chat: ${err?.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Auto-delegation from the main chat: decompose → run sub-agents in
+   * parallel → wait for all to finish → synthesize results back into the
+   * MAIN chat (instead of answering directly).
+   */
+  private async delegateToMultiAgent(request: string, model?: string) {
+    this.initMultiAgent();
+    if (!this.scheduler || !this.workOrderPool || !this.agentPool) return;
+    const { model: cfgModel, apiKey, apiBase } = this.getActiveCredentials();
+    const useModel = model || cfgModel;
+
+    // Fresh delegation: clear any leftover orders/agents/context from a prior run
+    // so the completion watcher doesn't fire on stale terminal tasks.
+    this.workOrderPool.clear();
+    this.agentPool.clear();
+
+    // Cancel any completion watcher left over from a previous delegation run.
+    // A stale watcher fires on the new run's terminal tasks and can unsubscribe
+    // the *new* watcher (via this.delegationWatchUnsub), leaving the UI
+    // stuck without synthesis — this is the root cause of "re-sending the
+    // same message leaves the main chat frozen on the collaborating state".
+    this.delegationWatchUnsub?.();
+    this.delegationWatchUnsub = undefined;
+    // Make sure the scheduler is fully stopped before a fresh start, so a still
+    // running tick loop from a prior run doesn't silently no-op the new start().
+    this.scheduler.stop();
+    // Forward the active LLM config so auto-provisioned sub-agents (created
+    // via ensureIdleAgent) get a *working* provider instead of an empty one —
+    // empty config made every sub-agent API call 401 and every task fail.
+    this.agentPool.setLlmConfig({ model: useModel, apiKey, apiBase });
+    const subAgentTimeoutSec = this.subAgentTimeout;
+    this.agentPool.setDefaultTimeout(subAgentTimeoutSec * 1000);
+
+    // Show a persistent "thinking" state in the main chat *during* PM decomposition
+    // (a slow LLM call) instead of only a transient toast.
+    this.postMessage({ type: 'thinking' });
+    this.postMessage({ type: 'thinking_chunk', text: '🔀 PM 正在拆解需求并分发子任务…' });
+
+    // Populate the dedicated AgentContextSystem for on-demand retrieval.
+    await this.populateContextSystem();
+
+    this.postMessage({ type: 'toast', level: 'info', text: 'PM 正在拆解需求…' });
+    let orders;
+    try {
+      orders = await this.scheduler.decomposeRequest(request.trim(), { model: useModel, apiKey, apiBase });
+    } catch (err: any) {
+      this.postMessage({ type: 'toast', level: 'error', text: `PM 拆解失败：${err?.message || err}` });
+      this.postMessage({ type: 'response', text: `（需求拆解失败：${err?.message || err}）` });
+      return;
+    }
+    this.pushWorkOrders();
+    this.pushAgentStatuses();
+
+    // Update the thinking block with the delegation count, then show the strip.
+    this.postMessage({ type: 'thinking_chunk', text: `🔀 已委派 ${orders.length} 个子任务给多个 Agent 并行协作，等待执行与结果汇总…` });
+    // Signal the main chat UI to show the active-agent strip.
+    this.postMessage({ type: 'multiAgent:delegationStart', request });
+
+    // Start the scheduler in parallel mode (auto-provisions role agents).
+    (this.scheduler as any).config.mode = 'parallel';
+    this.scheduler.start();
+
+    // Wait for every order to reach a terminal state, then synthesize.
+    //
+    // "Terminal" = done / failed / permanently stuck.  A stuck order is one
+    // that can never be assigned (no agent for its role) or has been pending
+    // for too long without any assignment attempt succeeding.  We aggressively
+    // fail stuck orders so the main chat never hangs.
+    const delegationStartTime = Date.now();
+    const allTerminal = (): { ready: boolean; forceFailed: number } => {
+      const all = this.workOrderPool!.getAll();
+      if (all.length === 0) return { ready: false, forceFailed: 0 };
+      let terminalCount = 0;
+      let stuckCount = 0;
+      const now = Date.now();
+      const elapsedMs = now - delegationStartTime;
+
+      for (const o of all) {
+        if (o.status === 'done' || o.status === 'failed') { terminalCount++; continue; }
+
+        // ── Stuck detection ──────────────────────────────────────
+        // 1) Blocked by a failed dependency → cascade-fail it
+        if (o.status === 'blocked') {
+          const depFailed = o.dependencies.some(depId => {
+            const dep = this.workOrderPool!.get(depId);
+            return dep && dep.status === 'failed';
+          });
+          if (depFailed) { stuckCount++; continue; }
+          return { ready: false, forceFailed: 0 };
+        }
+
+        // 2) Pending order that has been waiting too long with no progress.
+        //    If > 90 s have elapsed since delegation started and this order is
+        //    still pending (never assigned), treat it as stuck — something
+        //    prevented the scheduler from picking it up (no agent for role,
+        //    maxConcurrent hit, etc.)
+        if (o.status === 'pending' && elapsedMs > 90_000) {
+          stuckCount++; continue;
+        }
+
+        // 3) Running/assigned but been running past the timeout threshold.
+        //    This shouldn't happen normally (executeWithTimeout handles it),
+        //    but as a safety net: if running > 150s, consider it hung.
+        if ((o.status === 'running' || o.status === 'assigned') && elapsedMs > 150_000) {
+          stuckCount++; continue;
+        }
+
+        // Order is still actively being processed — not done yet
+        return { ready: false, forceFailed: 0 };
+      }
+
+      // Force-fail all stuck orders so they become real terminals
+      if (stuckCount > 0) {
+        console.log(`[VTE] Delegation: force-failing ${stuckCount} stuck order(s) after ${Math.round(elapsedMs/1000)}s`);
+        for (const o of all) {
+          if (o.status === 'blocked') {
+            const depFailed = o.dependencies.some(depId => {
+              const dep = this.workOrderPool!.get(depId);
+              return dep && dep.status === 'failed';
+            });
+            if (depFailed) this.workOrderPool!.fail(o.id, `前置任务失败，级联终止（${Math.round(elapsedMs/1000)}s）`);
+          } else if (o.status === 'pending' && elapsedMs > 90_000) {
+            this.workOrderPool!.fail(o.id, `任务长时间未分配，自动终止（${Math.round(elapsedMs/1000)}s）`);
+          } else if ((o.status === 'running' || o.status === 'assigned') && elapsedMs > 150_000) {
+            this.workOrderPool!.fail(o.id, `任务执行超时未响应，自动终止（${Math.round(elapsedMs/1000)}s）`);
+          }
+        }
+      }
+      return { ready: true, forceFailed: stuckCount };
+    };
+
+    // Safety net: if delegation is still running after 3 min, synthesize whatever we have.
+    const SAFETY_TIMEOUT_MS = 3 * 60 * 1000;
+    const safetyTimer = setTimeout(() => {
+      console.warn('[VTE] Delegation safety timeout (3min) reached — synthesizing with partial results');
+      this.delegationWatchUnsub?.();
+      this.delegationWatchUnsub = undefined;
+      if (this.scheduler) this.scheduler.stop();
+      // Force-mark all remaining non-terminal orders as failed
+      for (const o of this.workOrderPool!.getAll()) {
+        if (o.status !== 'done' && o.status !== 'failed') {
+          this.workOrderPool!.fail(o.id, '委派安全超时');
+        }
+      }
+      this.synthesizeAndDeliver(request, useModel, apiKey, apiBase);
+    }, SAFETY_TIMEOUT_MS);
+
+    const terminalCheck = allTerminal();
+    if (terminalCheck.ready) {
+      clearTimeout(safetyTimer);
+      await this.synthesizeAndDeliver(request, useModel, apiKey, apiBase);
+      return;
+    }
+
+    this.delegationWatchUnsub = this.workOrderPool!.onEvent((ev) => {
+      if ((ev.type === 'completed' || ev.type === 'failed')) {
+        const result = allTerminal();
+        if (result.ready) {
+          clearTimeout(safetyTimer);
+          this.delegationWatchUnsub?.();
+          this.delegationWatchUnsub = undefined;
+          this.synthesizeAndDeliver(request, useModel, apiKey, apiBase);
+        }
+      }
+    });
+  }
+
+  /**
+   * Collect every finished work order's result, ask a PM-style engine to
+   * synthesize a coherent final answer, and stream it into the MAIN chat.
+   */
+  private async synthesizeAndDeliver(request: string, model: string, apiKey: string, apiBase: string) {
+    if (this.scheduler) this.scheduler.stop();
+    // Sub-agents are done; hide the active-agent strip (synthesis begins).
+    this.postMessage({ type: 'multiAgent:delegationEnd' });
+    const orders = this.workOrderPool ? this.workOrderPool.getAll() : [];
+    const summary = orders.map(o => {
+      const statusLabel = o.status === 'done' ? '✅ 完成' : '❌ 失败';
+      const body = o.status === 'done'
+        ? (o.result || '无输出').replace(/\s+/g, ' ').trim().slice(0, 2000)
+        : (o.error || '未知错误');
+      return `### [${o.requiredRole || '?'}] ${o.title} — ${statusLabel}\n${body}`;
+    }).join('\n\n');
+
+    const prompt =
+      `你是项目主 Agent。下面的需求已经由多个子 Agent 协作完成。` +
+      `请综合各个角色的工作结果，给用户一份连贯、可读的最终答复（使用中文与 Markdown，重点说明做了什么、结果如何、是否需要用户后续操作）。\n\n` +
+      `## 原始需求\n${request}\n\n` +
+      `## 各子 Agent 的工作结果\n${summary}`;
+
+    const synth = this.buildAgentEngine(model, apiKey, apiBase, 'medium');
+    synth.onViewUpdate = (u: Record<string, unknown>) => {
+      const type = u.type as string;
+      if (type === 'thinking_start') {
+        this.postMessage({ type: 'thinking' });
+      } else if (type === 'thinking_chunk') {
+        this.postMessage({ type: 'thinking_chunk', text: u.text as string });
+      } else if (type === 'stream_chunk') {
+        this.postMessage({ type: 'stream_chunk', text: u.text as string });
+      }
+    };
+
+    let answer = '';
+    try {
+      answer = await synth.chat(prompt);
+    } catch (err: any) {
+      answer = `（结果汇总失败：${err?.message || err}）\n\n${summary}`;
+    }
+    this.postMessage({ type: 'response', text: answer });
+    this.postMessage({ type: 'toast', level: 'success', text: '多 Agent 协作完成，已汇总结果' });
+    log(`[VTE] Multi-agent delegation finished, synthesized ${orders.length} results back to main chat`);
   }
 
   private handleStartScheduler(mode?: string) {

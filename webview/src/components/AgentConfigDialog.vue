@@ -178,9 +178,9 @@ const form = reactive({
   apiKey: '',
   apiBase: '',
   isolation: 'shared' as string,
-  api: '' as '' | 'chat' | 'responses',
-  thinkingStyle: '' as '' | ThinkingStyle,
-  reasoningLevel: '' as '' | ReasoningLevel,
+  api: 'chat' as 'chat' | 'responses',
+  thinkingStyle: 'auto' as ThinkingStyle,
+  reasoningLevel: 'medium' as ReasoningLevel,
 })
 
 // Initialize with global config when dialog opens
@@ -190,9 +190,9 @@ watch(() => props.visible, (v) => {
     form.apiKey = ''
     form.apiBase = ''
     form.isolation = props.role.isolation || 'shared'
-    form.api = ''
-    form.thinkingStyle = ''
-    form.reasoningLevel = ''
+    form.api = 'chat'
+    form.thinkingStyle = 'auto'
+    form.reasoningLevel = 'medium'
     showKey.value = false
   }
 })

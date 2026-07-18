@@ -3,10 +3,17 @@
     <div class="dashboard-header">
       <span class="dashboard-title">Agent 仪表盘</span>
       <div class="dashboard-actions">
+        <div class="mode-seg">
+          <button
+            v-for="m in modes" :key="m.id"
+            class="mode-seg-btn" :class="{ active: scheduleMode === m.id }"
+            @click="scheduleMode = m.id"
+          >{{ m.label }}</button>
+        </div>
         <button class="btn btn-sm" @click="showRolePicker = true">
           <span>+ 新建 Agent</span>
         </button>
-        <button class="btn btn-sm btn-primary" @click="$emit('startScheduler')">
+        <button class="btn btn-sm btn-primary" @click="$emit('startScheduler', scheduleMode)">
           {{ schedulerRunning ? '⏸ 暂停' : '▶ 启动' }}
         </button>
       </div>
@@ -136,13 +143,20 @@ defineProps<{
 
 const emit = defineEmits<{
   createAgent: [roleId: string, config: { model: string; apiKey: string; apiBase: string }]
-  startScheduler: []
+  startScheduler: [mode: string]
   selectAgent: [id: string]
 }>()
 
 const showRolePicker = ref(false)
 const selectedRole = ref<AgentRole | null>(null)
 const roles = BUILTIN_ROLES
+
+const scheduleMode = ref<'pool' | 'parallel' | 'hybrid'>('parallel')
+const modes = [
+  { id: 'pool', label: '池化' },
+  { id: 'parallel', label: '并行' },
+  { id: 'hybrid', label: '混合' },
+]
 
 const ROLE_COLORS: Record<string, string> = {
   pm: '#6366f1', dev: '#22c55e', test: '#f59e0b', review: '#8b5cf6', doc: '#ec4899',
@@ -180,7 +194,19 @@ function onConfirmConfig(config: { model: string; apiKey: string; apiBase: strin
   margin-bottom: 12px;
 }
 .dashboard-title { font-size: 14px; font-weight: 600; color: var(--vte-text); }
-.dashboard-actions { display: flex; gap: 6px; }
+.dashboard-actions { display: flex; gap: 6px; align-items: center; }
+
+.mode-seg {
+  display: flex; padding: 2px; border-radius: 7px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--vte-border);
+}
+.mode-seg-btn {
+  padding: 3px 9px; border: none; background: none; cursor: pointer;
+  font-size: 11px; font-weight: 500; border-radius: 5px;
+  color: var(--vte-text-muted); transition: all 0.15s;
+}
+.mode-seg-btn:hover { color: var(--vte-text); }
+.mode-seg-btn.active { background: var(--vte-primary, #6366f1); color: #fff; }
 
 .btn {
   padding: 5px 10px; border-radius: 6px; border: none;

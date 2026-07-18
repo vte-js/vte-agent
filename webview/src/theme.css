@@ -65,6 +65,7 @@ body {
   height: 100%;
   overflow: hidden;
   min-height: 0;
+  position: relative;
 }
 .config-overlay {
   flex: 1;
@@ -258,7 +259,7 @@ body {
 .msg-image:hover { transform: scale(1.02); }
 
 /* Message hover toolbar */
-.msg-toolbar { display: flex; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity 0.15s; align-items: center; }
+.msg-toolbar { display: flex; gap: 2px; margin-top: 4px; opacity: 0.55; transition: opacity 0.15s; align-items: center; }
 .mg.user .msg-toolbar { justify-content: flex-end; margin-left: 48px; }
 .mg.assistant .msg-toolbar { justify-content: flex-start; }
 .mg:hover .msg-toolbar { opacity: 1; }
@@ -366,6 +367,41 @@ pre code { display: block; padding: 12px; overflow-x: auto; font-family: var(--v
 .c-slider-thumb { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: #6366f1; border: 2px solid var(--vte-bg-elevated); box-shadow: 0 1px 4px rgba(0,0,0,0.3); transform: translate(-50%,-50%); cursor: pointer; transition: box-shadow .15s; }
 .c-slider-thumb:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.3), 0 0 0 3px rgba(99,102,241,0.2); }
 .c-slider-val { font-size: 10px; color: var(--vte-text-muted); min-width: 32px; text-align: right; font-variant-numeric: tabular-nums; font-family: var(--vscode-editor-font-family, 'SF Mono', Monaco, Menlo, Consolas, monospace); }
+
+/* ── Number Input ── */
+.c-num-input {
+  width: 100%; padding: 7px 10px; box-sizing: border-box;
+  border-radius: 8px; border: 1px solid var(--vte-border);
+  background: var(--vte-bg-elevated); color: var(--vte-text);
+  font-size: 13px; outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+  /* Hide native spinners — they clash with the dark theme */
+  -moz-appearance: textfield;
+}
+.c-num-input::-webkit-outer-spin-button,
+.c-num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.c-num-input:hover { border-color: var(--vte-primary); }
+.c-num-input:focus {
+  border-color: var(--vte-primary);
+  box-shadow: 0 0 0 2px var(--vte-primary-muted, rgba(99,102,241,0.15));
+}
+
+/* ── Toggle / Checkbox ── */
+.c-toggle { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+.c-toggle-box {
+  appearance: none; -webkit-appearance: none; margin: 0;
+  width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
+  border: 1.5px solid var(--vte-border); background: var(--vte-bg-elevated);
+  position: relative; transition: all .15s ease; cursor: pointer;
+}
+.c-toggle-box:hover { border-color: var(--vte-primary); }
+.c-toggle-box:checked { background: var(--vte-primary); border-color: var(--vte-primary); }
+.c-toggle-box:checked::after {
+  content: ''; position: absolute; left: 4.5px; top: 1.5px;
+  width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.c-toggle-label { font-size: 13px; font-weight: 500; color: var(--vte-text); }
 
 /* ── Token Ring ── */
 .token-ring-wrap {

@@ -21,7 +21,7 @@
       :scheduler-running="false"
       :global-config="{ model: config.model.value, apiKey: config.apiKey.value, apiBase: config.apiBase.value }"
       @create-agent="(roleId, agentConfig) => multiAgent.createAgentWithConfig(roleId, agentConfig)"
-      @start-scheduler="multiAgent.startScheduler()"
+      @start-scheduler="(m) => multiAgent.startScheduler(m)"
       @select-agent="multiAgent.selectAgent"
     />
     <!-- Work Order Board (toggleable) -->
@@ -50,6 +50,12 @@
       :history="multiAgent.agents.value.find(a => a.id === multiAgent.activeAgentId.value)?.conversationHistory || []"
       @close="multiAgent.activeAgentId.value = null"
       @send-message="(text) => multiAgent.sendAgentMessage(multiAgent.activeAgentId.value!, text)"
+    />
+    <!-- Active-agent floating strip (overlays chat bottom, zero layout impact) -->
+    <ActiveAgents
+      v-if="delegationActive"
+      :agents="multiAgent.agents.value"
+      :request="delegationRequest"
     />
     </div>
     <!-- Input area -->
@@ -83,9 +89,8 @@
     :visible="config.configVisible.value"
     :models="config.models.value"
     :active-model-index="config.activeModelIndex.value"
-    :initial-api-key="config.apiKey.value"
-    :initial-api-base="config.apiBase.value"
-    :initial-model="config.model.value"
+    :initial-sub-agent-timeout="config.subAgentTimeout.value"
+    :initial-force-multi-agent="config.forceMultiAgent.value"
     :mode="mode.mode.value"
     :task-mode="taskMode.taskMode.value"
     :temperature="temperature"
@@ -171,6 +176,7 @@ import AgentDashboard from './components/AgentDashboard.vue'
 import WorkOrderBoard from './components/WorkOrderBoard.vue'
 import WorkOrderDetail from './components/WorkOrderDetail.vue'
 import AgentConversation from './components/AgentConversation.vue'
+import ActiveAgents from './components/ActiveAgents.vue'
 import { useChat } from './composables/useChat'
 import { useMode } from './composables/useMode'
 import { useConfig } from './composables/useConfig'
@@ -215,6 +221,10 @@ const questionRecommended = ref('')
 
 // LSP panel state
 const lspPanelVisible = ref(false)
+
+// Auto-delegation active-agent strip (main chat)
+const delegationActive = ref(false)
+const delegationRequest = ref('')
 
 // Last assistant text for dynamic placeholder
 const lastAssistantText = computed(() => {
@@ -309,6 +319,13 @@ onMounted(() => {
           ? Math.round((stats.cacheHits / stats.totalCalls) * 100)
           : 0
       }
+    } else if (msg.type === 'multiAgent:delegationStart') {
+      // Main agent auto-delegated: show active-agent strip above input.
+      delegationActive.value = true
+      delegationRequest.value = msg.request || ''
+    } else if (msg.type === 'multiAgent:delegationEnd') {
+      // Sub-agents finished; hide the strip (synthesis begins).
+      delegationActive.value = false
     }
   })
 
@@ -379,11 +396,9 @@ function onStop() {
   chat.stop()
 }
 
-function onSaveConfig(cfg: { apiKey: string; apiBase: string; model: string }) {
-  config.apiKey.value = cfg.apiKey
-  config.apiBase.value = cfg.apiBase
-  config.model.value = cfg.model
-  paramsModel.value = cfg.model
+function onSaveConfig(cfg: { subAgentTimeout?: number; forceMultiAgent?: boolean }) {
+  if (cfg.subAgentTimeout != null) config.subAgentTimeout.value = cfg.subAgentTimeout
+  if (cfg.forceMultiAgent != null) config.forceMultiAgent.value = cfg.forceMultiAgent
   config.saveConfig()
 }
 

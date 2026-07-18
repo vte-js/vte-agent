@@ -6,3 +6,4 @@ out/
 .mimocode/node_modules/
 .mimocode/.cron-lock
 uni-agent/
+.workbuddy/

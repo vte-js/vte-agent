@@ -4,7 +4,7 @@
  */
 
 import * as path from 'path';
-import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint, ApiProtocol, ThinkingStyle, ReasoningLevel } from '../shared/types';
+import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint, ApiProtocol, ThinkingStyle, ReasoningLevel, ProjectIndex } from '../shared/types';
 import { formatIndexForLLM } from '../context/protocol';
 import {
   createTokenBudget,
@@ -39,7 +39,7 @@ export type AgentMode = 'plan' | 'code';
 // Register all tools
 registerTools([...allTools, bashTool, grepTool, globTool, diagnosticsTool, gitTool, webfetchTool, taskCreateTool, taskUpdateTool, taskListTool, taskDeleteTool, checkpointSaveTool, checkpointListTool, checkpointRestoreTool, checkpointDeleteTool, checkpointDiffTool, checkpointLogTool, questionTool]);
 
-const READ_ONLY_TOOL_NAMES = ['read', 'search', 'list', 'grep', 'glob', 'diagnostics', 'git'];
+const READ_ONLY_TOOL_NAMES = ['read', 'search', 'list', 'grep', 'glob', 'diagnostics', 'git', 'get_context'];
 
 export class AgentEngine {
   private context: ContextManager;
@@ -181,6 +181,52 @@ export class AgentEngine {
 
   getReasoningLevel(): ReasoningLevel {
     return this.reasoningLevel;
+  }
+
+  /**
+   * Summarize what THIS agent already knows about the project, so that
+   * delegated sub-agents can start informed instead of re-exploring
+   * the whole workspace from scratch.
+   * Safe-casts the context manager (only VTEContextManager exposes
+   * read-files/index; other hosts may not).
+   */
+  getContextSummary(): string {
+    const ctx = this.context as unknown as {
+      getReadFiles?: () => string[]
+      getIndex?: () => ProjectIndex | null
+    }
+    const readFiles = ctx.getReadFiles?.() || []
+    const index = ctx.getIndex?.()
+    const parts: string[] = []
+    if (index) {
+      parts.push(formatIndexForLLM(index))
+    }
+    if (readFiles.length) {
+      parts.push(
+        `## 主 agent 已读取的文件（供参考，避免重复读取）\n` +
+        readFiles.slice(0, 60).map((f) => `- ${f}`).join('\n')
+      )
+    }
+    return parts.join('\n\n')
+  }
+
+  /**
+   * Ensure the project index is built, then return it. Used by the host to
+   * populate the AgentContextSystem so sub-agents can retrieve structure on
+   * demand (instead of the index being pasted into every prompt).
+   */
+  async ensureProjectIndex(): Promise<ProjectIndex | null> {
+    if (!this.context.getSnapshot().projectIndex) {
+      await this.context.buildIndex()
+    }
+    const ctx = this.context as unknown as { getIndex?: () => ProjectIndex | null }
+    return ctx.getIndex?.() ?? null
+  }
+
+  /** Files THIS agent has already read (for the context system). */
+  getContextReadFiles(): string[] {
+    const ctx = this.context as unknown as { getReadFiles?: () => string[] }
+    return ctx.getReadFiles?.() ?? []
   }
 
   setApiProtocol(protocol: ApiProtocol) {

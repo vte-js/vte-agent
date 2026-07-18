@@ -32,26 +32,6 @@
                 @save="(i, p) => $emit('saveModel', i, p)"
                 @delete="$emit('deleteModel', $event)"
               />
-              <div class="cfg-fields-grid">
-                <div class="cfg-field">
-                  <label class="cfg-label">API 密钥</label>
-                  <div class="cfg-input-wrap">
-                    <input class="cfg-input" :type="showKey ? 'text' : 'password'" v-model="apiKey" placeholder="sk-..."/>
-                    <button class="cfg-input-eye" @click="showKey = !showKey">
-                      <svg v-if="!showKey" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                      </svg>
-                      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-label">API 地址</label>
-                  <input class="cfg-input" v-model="apiBase" placeholder="https://api.openai.com/v1"/>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -97,6 +77,19 @@
                   <button class="cfg-seg-btn" :class="{ active: taskMode === 'llm-auto' }" @click="$emit('update:taskMode', 'llm-auto')">LLM 自判断</button>
                   <button class="cfg-seg-btn" :class="{ active: taskMode === 'plugin-auto' }" @click="$emit('update:taskMode', 'plugin-auto')">插件自判断</button>
                 </div>
+              </div>
+
+              <!-- Sub-agent timeout -->
+              <div class="cfg-subsection">
+                <div class="cfg-subsection-label">子 Agent 超时（秒）</div>
+                <NumberInput v-model="subAgentTimeout" :min="30" :step="30" />
+                <div class="cfg-hint">多 Agent 协作时，每个子 Agent 单任务执行的超时时间。复杂任务（如开发 CLI）建议 300 以上。</div>
+              </div>
+
+              <!-- Force multi-agent delegation -->
+              <div class="cfg-subsection">
+                <Toggle v-model="forceMultiAgent" label="强制多 Agent 委派" />
+                <div class="cfg-hint">开启后，每条对话都走「PM 拆解 → 并行子 Agent → 汇总」链路，绕过路由判断。适合测试多 Agent 流程。</div>
               </div>
 
               <!-- Permission control (only in code mode) -->
@@ -227,6 +220,8 @@ import type { ModelProfile, PermissionConfig } from '../composables/useConfig'
 import { PERMISSION_CATEGORIES } from '../composables/useConfig'
 import ModelSelector from './ModelSelector.vue'
 import Toast from './Toast.vue'
+import NumberInput from './NumberInput.vue'
+import Toggle from './Toggle.vue'
 
 interface LspProfile {
   languageId: string
@@ -240,9 +235,8 @@ const props = defineProps<{
   visible: boolean
   models: ModelProfile[]
   activeModelIndex: number
-  initialApiKey: string
-  initialApiBase: string
-  initialModel: string
+  initialSubAgentTimeout?: number
+  initialForceMultiAgent?: boolean
   mode: AgentMode
   taskMode: TaskMode
   temperature: number
@@ -254,7 +248,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  save: [config: { apiKey: string; apiBase: string; model: string }]
+  save: [config: { subAgentTimeout?: number; forceMultiAgent?: boolean }]
   selectModel: [index: number]
   saveModel: [index: number, profile: { name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }]
   deleteModel: [index: number]
@@ -269,23 +263,19 @@ const emit = defineEmits<{
 }>()
 
 const profileName = ref('')
-const apiKey = ref(props.initialApiKey)
-const apiBase = ref(props.initialApiBase)
-const modelName = ref(props.initialModel)
-const showKey = ref(false)
+const subAgentTimeout = ref(props.initialSubAgentTimeout ?? 300)
+const forceMultiAgent = ref(props.initialForceMultiAgent ?? false)
 const showToast = ref(false)
 
 watch(() => props.visible, (v) => {
   if (v) {
-    apiKey.value = props.initialApiKey
-    apiBase.value = props.initialApiBase
-    modelName.value = props.initialModel
+    subAgentTimeout.value = props.initialSubAgentTimeout ?? 300
+    forceMultiAgent.value = props.initialForceMultiAgent ?? false
   }
 }, { immediate: true })
 
-watch(() => props.initialApiKey, (v) => apiKey.value = v)
-watch(() => props.initialApiBase, (v) => apiBase.value = v)
-watch(() => props.initialModel, (v) => modelName.value = v)
+watch(() => props.initialSubAgentTimeout, (v) => { if (v != null) subAgentTimeout.value = v })
+watch(() => props.initialForceMultiAgent, (v) => { if (v != null) forceMultiAgent.value = v })
 
 function onPermissionChange(key: string, value: string) {
   const newConfig = { ...props.permissionConfig, [key]: value }
@@ -293,7 +283,7 @@ function onPermissionChange(key: string, value: string) {
 }
 
 function onSave() {
-  emit('save', { apiKey: apiKey.value, apiBase: apiBase.value, model: modelName.value })
+  emit('save', { subAgentTimeout: subAgentTimeout.value, forceMultiAgent: forceMultiAgent.value })
   showToast.value = true
   setTimeout(() => { showToast.value = false }, 2000)
 }
@@ -349,6 +339,11 @@ function onSave() {
 .cfg-subsection-label {
   font-size: 12px; font-weight: 500; color: var(--vte-text-muted);
   margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+
+.cfg-hint {
+  margin-top: 6px; font-size: 11px; line-height: 1.5; color: var(--vte-text-muted);
+  opacity: 0.8;
 }
 .cfg-badge {
   padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500;
@@ -448,37 +443,6 @@ function onSave() {
   display: flex; justify-content: space-between;
   font-size: 10px; color: var(--vte-text-muted); margin-top: 4px; opacity: 0.6;
 }
-
-/* ═══════════════════════════════════════
-   Fields
-   ═══════════════════════════════════════ */
-.cfg-fields-grid {
-  display: flex; flex-wrap: wrap; gap: 12px;
-  margin-top: 12px;
-}
-.cfg-fields-grid .cfg-field {
-  flex: 1; min-width: 180px;
-}
-.cfg-field { display: flex; flex-direction: column; gap: 6px; }
-.cfg-label { font-size: 12px; font-weight: 500; color: var(--vte-text-muted); }
-.cfg-input {
-  padding: 8px 12px; border-radius: 8px; border: 1px solid var(--vte-border);
-  background: var(--vte-input-bg); color: var(--vte-text); font-size: 13px;
-  outline: none; width: 100%;
-}
-.cfg-input:focus { border-color: var(--vte-primary); }
-.cfg-input::placeholder { color: var(--vte-text-muted); opacity: 0.5; }
-.cfg-input-wrap {
-  position: relative; display: flex; align-items: center;
-}
-.cfg-input-wrap .cfg-input { padding-right: 36px; }
-.cfg-input-eye {
-  position: absolute; right: 8px;
-  width: 28px; height: 28px; border: none; background: none;
-  border-radius: 6px; color: var(--vte-text-muted);
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-}
-.cfg-input-eye:hover { background: rgba(255,255,255,0.06); color: var(--vte-text); }
 
 /* ═══════════════════════════════════════
    LSP Configuration

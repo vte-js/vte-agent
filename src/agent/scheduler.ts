@@ -37,6 +37,10 @@ export class Scheduler {
   private running = false
   private tickInterval?: ReturnType<typeof setInterval>
   private handlers: ScheduleEventHandler[] = []
+  /** Track how many times each order has been skipped (no agent available) */
+  private assignFailures: Map<string, number> = new Map()
+  /** Max skip attempts before marking an order as permanently failed */
+  private static readonly MAX_ASSIGN_ATTEMPTS = 3
 
   constructor(pool: AgentPool, workOrderPool: WorkOrderPool, config: ScheduleConfig) {
     this.pool = pool
@@ -67,6 +71,7 @@ export class Scheduler {
   start() {
     if (this.running) return
     this.running = true
+    this.assignFailures.clear() // Reset failure tracking for new delegation
     // Initial schedule
     this.schedule()
     // Periodic tick every 2 seconds
@@ -117,8 +122,16 @@ export class Scheduler {
   private schedulePool() {
     const readyOrders = this.workOrderPool.getReady()
     for (const order of readyOrders) {
-      const agent = this.pool.getIdleAgent(order.requiredRole)
-      if (!agent) break // No available agents
+      const agent = this.pool.ensureIdleAgent(order.requiredRole)
+      if (!agent) {
+        const fails = (this.assignFailures.get(order.id) || 0) + 1
+        this.assignFailures.set(order.id, fails)
+        console.log(`[VTE] Scheduler[pool]: no agent for "${order.title}" (role=${order.requiredRole}, attempt=${fails}/${Scheduler.MAX_ASSIGN_ATTEMPTS})`)
+        if (fails >= Scheduler.MAX_ASSIGN_ATTEMPTS) {
+          this.workOrderPool.fail(order.id, `无法分配：无可用 ${order.requiredRole} Agent`)
+        }
+        break // No available agents
+      }
 
       this.pool.assignOrder(order.id, agent.id)
       this.emit({ type: 'order_assigned', orderId: order.id, agentId: agent.id, timestamp: new Date().toISOString() })
@@ -137,8 +150,16 @@ export class Scheduler {
     for (const stageRole of stages) {
       const stageOrders = this.workOrderPool.getReady().filter(o => o.requiredRole === stageRole)
       for (const order of stageOrders) {
-        const agent = this.pool.getIdleAgent(stageRole)
-        if (!agent) break
+        const agent = this.pool.ensureIdleAgent(stageRole)
+        if (!agent) {
+          const fails = (this.assignFailures.get(order.id) || 0) + 1
+          this.assignFailures.set(order.id, fails)
+          console.log(`[VTE] Scheduler[pipeline]: no agent for "${order.title}" (role=${stageRole}, attempt=${fails}/${Scheduler.MAX_ASSIGN_ATTEMPTS})`)
+          if (fails >= Scheduler.MAX_ASSIGN_ATTEMPTS) {
+            this.workOrderPool.fail(order.id, `无法分配：无可用 ${stageRole} Agent`)
+          }
+          break
+        }
 
         this.pool.assignOrder(order.id, agent.id)
         this.emit({ type: 'order_assigned', orderId: order.id, agentId: agent.id, timestamp: new Date().toISOString() })
@@ -152,17 +173,39 @@ export class Scheduler {
    */
   private scheduleParallel() {
     const readyOrders = this.workOrderPool.getReady()
+    if (readyOrders.length === 0) return
+
+    console.log(`[VTE] Scheduler[parallel]: ${readyOrders.length} ready orders: [${readyOrders.map(o => `"${o.title}"(${o.requiredRole})`).join(', ')}]`)
     const promises: Promise<void>[] = []
 
     for (const order of readyOrders) {
-      const agent = this.pool.getIdleAgent(order.requiredRole)
-      if (!agent) continue
+      console.log(`[VTE] Scheduler[parallel]: trying to assign "${order.title}" (role=${order.requiredRole})`)
+      const agent = this.pool.ensureIdleAgent(order.requiredRole)
+      if (!agent) {
+        // Track assignment failures — don't silently skip
+        const fails = (this.assignFailures.get(order.id) || 0) + 1
+        this.assignFailures.set(order.id, fails)
+        console.log(
+          `[VTE] Scheduler: no agent available for order "${order.title}" ` +
+          `(role=${order.requiredRole}, attempt=${fails}/${Scheduler.MAX_ASSIGN_ATTEMPTS})`
+        )
+        if (fails >= Scheduler.MAX_ASSIGN_ATTEMPTS) {
+          console.error(
+            `[VTE] Scheduler: permanently failing order "${order.title}" — ` +
+            `no agent available for role "${order.requiredRole}" after ${fails} attempts`
+          )
+          this.workOrderPool.fail(order.id, `无法分配：无可用 ${order.requiredRole} Agent`)
+        }
+        continue
+      }
 
       this.pool.assignOrder(order.id, agent.id)
       this.emit({ type: 'order_assigned', orderId: order.id, agentId: agent.id, timestamp: new Date().toISOString() })
+      console.log(`[VTE] Scheduler[parallel]: assigned "${order.title}" → ${agent.id}`)
       promises.push(this.pool.executeOrder(agent.id, order.id))
     }
 
+    console.log(`[VTE] Scheduler[parallel]: assigned ${promises.length}/${readyOrders.length} orders (${readyOrders.length - promises.length} skipped due to no agent)`)
     // Don't await — let them run in parallel
     Promise.allSettled(promises).catch(() => {})
   }

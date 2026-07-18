@@ -25,8 +25,8 @@ export type WebviewToHostMessage =
   | { type: 'setPermissionConfig'; config: Record<string, string> }
   | { type: 'permissionResponse'; requestId: string; decision: 'allow_once' | 'always_allow' | 'deny' }
   | { type: 'clear' }
-  | { type: 'saveConfig'; apiKey: string; apiBase: string; model: string }
   | { type: 'getConfig' }
+  | { type: 'saveModels'; models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; activeModelIndex: number; subAgentTimeout?: number; forceMultiAgent?: boolean }
   | { type: 'setMode'; mode: 'plan' | 'code' }
   | { type: 'setTaskMode'; taskMode: TaskMode }
   | { type: 'setReasoningLevel'; level: ReasoningLevel }
@@ -82,7 +82,7 @@ export type HostToWebviewMessage =
   | { type: 'filePickerResult'; files: ContextAttachment[] }
   | { type: 'gitData'; changes: string[]; commits: Array<{ hash: string; message: string }> }
   | { type: 'cleared' }
-  | { type: 'configData'; apiKey: string; apiBase: string; model: string; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }> }
+  | { type: 'configData'; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; subAgentTimeout?: number; forceMultiAgent?: boolean }
   | { type: 'configSaved' }
   | { type: 'showSettings' }
   | { type: 'modeChanged'; mode: 'plan' | 'code' }
@@ -120,6 +120,9 @@ export type HostToWebviewMessage =
   | { type: 'lspConfigEditor:data'; profiles: Record<string, LspProfile> }
   | { type: 'lspConfigEditor:saved'; languageId: string }
   | { type: 'lspConfigEditor:deleted'; languageId: string }
+  // Multi-agent auto-delegation status (main chat active-agent strip)
+  | { type: 'multiAgent:delegationStart'; request: string }
+  | { type: 'multiAgent:delegationEnd' }
 
 export interface SessionMeta {
   id: string

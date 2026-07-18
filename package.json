@@ -159,21 +159,6 @@
     "configuration": {
       "title": "VTE Agent",
       "properties": {
-        "vteCode.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "LLM API key"
-        },
-        "vteCode.apiBase": {
-          "type": "string",
-          "default": "https://api.openai.com/v1",
-          "description": "LLM API base URL"
-        },
-        "vteCode.model": {
-          "type": "string",
-          "default": "gpt-4",
-          "description": "Model name"
-        },
         "vteCode.models": {
           "type": "array",
           "default": [

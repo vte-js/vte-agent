@@ -50,8 +50,8 @@
         切换到编码模式并执行
       </button>
     </div>
-    <!-- Toolbar OUTSIDE the bubble — hide for empty assistant messages -->
-    <div v-if="!editing && (msg.role !== 'assistant' || msg.text || msg.thinkingText || msg.toolCalls?.length)" class="msg-toolbar">
+    <!-- Toolbar OUTSIDE the bubble — hide for empty / thinking-only assistant messages -->
+    <div v-if="!editing && (msg.role !== 'assistant' || msg.text || msg.toolCalls?.length)" class="msg-toolbar">
       <span v-if="msg.role === 'user' && msg.timestamp" class="msg-time">{{ msg.timestamp }}</span>
       <VTooltip text="复制内容">
         <button class="mt-btn" @click="copyText">

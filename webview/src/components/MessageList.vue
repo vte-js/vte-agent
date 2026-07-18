@@ -88,6 +88,11 @@ watch(() => props.toolTick, () => {
 </script>
 
 <style scoped>
+.msgs {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px 36px; /* extra bottom padding for floating agent strip */
+}
 .st-btn {
   position: absolute;
   bottom: 12px;

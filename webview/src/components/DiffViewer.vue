@@ -106,7 +106,7 @@ const props = defineProps<{
   content: string
 }>()
 
-const expanded = ref(true)
+const expanded = ref(false)
 const showAll = ref(false)
 const maxBlocks = 5
 const isWide = ref(false)

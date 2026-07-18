@@ -1,13 +1,17 @@
 # VTE Agent
 
-Pluggable-host AI coding agent with fine-grained permission control.
+Pluggable-host AI coding agent with fine-grained permission control, a token-efficient multi-agent engine, and a framework-agnostic core.
 
 [中文文档](README_CN.md)
 
 ## Features
 
 - **Multi-model** — GPT-4o, Claude, DeepSeek, Qwen, MiMo
-- **Pluggable architecture** — HostAdapter for VSCode, Web, CLI, Electron, JetBrains
+- **Pluggable architecture** — HostAdapter for VSCode, Web, CLI, Electron, JetBrains (zero VSCode coupling in the core)
+- **Token-efficient multi-agent engine** — PM decomposes a request into role-specific work orders, sub-agents run in parallel, results synthesize back. Context is fetched *on demand* via a `get_context` tool instead of being injected into every prompt — no N-copy token waste
+- **Per-agent LLM config** — each sub-agent can carry its own provider / model / thinking style / reasoning level
+- **Sandbox isolation** — git-worktree isolation for write agents; shared working dir fallback for non-git / non-Node hosts
+- **Shared context** — read-only aggregate of completed work orders, retrievable by sibling agents
 - **Context attachment** — Files, folders, documents, Skills, terminal, Git
 - **Session management** — Create, restore, rename, search, import/export
 - **Task tracking** — Real-time task progress with status updates
@@ -24,23 +28,33 @@ Pluggable-host AI coding agent with fine-grained permission control.
 
 ## Architecture
 
+The core (`src/core`, `src/agent`, `src/tools`, `src/context`, `src/shared`) is **framework-agnostic** — it imports nothing from `vscode`. All host bindings live exclusively under `src/vscode/` (the VSCode host adapter). Swapping hosts means writing a new adapter, not touching the engine.
+
 ```
 src/
 ├── core/          # Framework-agnostic types, registry, permissions
 ├── host/          # HostAdapter interface + implementations
 │   ├── types.ts   # HostAdapter, HostFileSystem, HostUI, HostMessaging
-│   ├── vscode.ts  # VSCode adapter
+│   ├── vscode.ts  # VSCode adapter   ← only place that imports 'vscode'
 │   └── registry.ts
-├── agent/         # Engine, tools, sessions
-├── tools/         # file, bash, git, search, question...
+├── agent/         # Engine, agent pool, scheduler, context system
+│   ├── engine.ts          # Single-agent LLM engine (host-agnostic)
+│   ├── agent-pool.ts      # Role-based sub-agent lifecycle + PM decompose
+│   ├── scheduler.ts       # Parallel / pool / pipeline scheduling
+│   ├── context-system.ts  # Singleton context authority (get_context source)
+│   ├── context-tool.ts    # get_context tool — on-demand, token-efficient
+│   └── shared-context.ts  # Read-only cross-agent result aggregate
+├── tools/         # file, bash, git, search, question, get_context...
 ├── context/       # Project indexing, file reading
 ├── skills/        # Built-in skill definitions
-└── vscode/        # VSCode extension, panel, LSP
+└── vscode/        # VSCode extension, panel, LSP  ← host layer only
 
 webview/src/
 ├── composables/   # useHost, useChat, useConfig
-├── components/    # MessageBubble, ToolCallBlock, DiffViewer, QuestionDialog
-└── protocol.ts    # Message types (webview ↔ host)
+├── components/    # MessageBubble, ToolCallBlock, DiffViewer, QuestionDialog,
+│                   # NumberInput, Toggle, ...  (shared component library)
+├── theme.css      # --vte-* design tokens + `c-` component styles
+└── protocol.ts    # Message types (webview ↔ host), host-agnostic
 ```
 
 ### HostAdapter
@@ -59,38 +73,43 @@ interface HostAdapter {
 
 Implement `HostAdapter` + call `setHost()`. Tools use `getHost()` with Node.js fallback.
 
-## Installation
+## Multi-Agent Engine
 
-```bash
-# VSCode Marketplace
-code --install-extension vte-agent-0.0.1.vsix
-```
+A single chat message can be routed (or forced) into the multi-agent pipeline:
 
-## Quick Start
+1. **PM (project manager)** agent decomposes the request into role-specific work orders (developer / tester / reviewer / documenter). It has *no* write tools — only `get_context` to inspect project structure.
+2. The **scheduler** assigns orders to idle role agents. Roles have concurrency caps (pm:1, dev:3, test:2, review:1, doc:1) so capable roles genuinely run in parallel.
+3. Each sub-agent executes its order and reports back. Completed output is aggregated into the shared context.
+4. When all terminal orders finish (or a safety timeout fires), results synthesize back to the main chat.
 
-1. Open VTE Agent from Activity Bar or Status Bar
-2. Configure API key and model
-3. Start chatting
+### Token efficiency — the core design rule
 
-## Usage
+Traditional multi-agent GUIs inject the full project context into *every* sub-agent prompt. With N parallel agents that's N copies of the context — pure token waste.
 
-| Key | Action |
-|-----|--------|
-| `/` | Slash commands |
-| `@` | Context attachment |
-| `Enter` | Send message |
-| `Shift+Enter` | New line |
-| `Tab` | Accept LLM suggestion |
+VTE does **not** do that. There is a single, process-level `AgentContextSystem` that is the *only* authority for project context (structure, files the main agent read, shared sibling output). Sub-agents receive a *small* prompt that tells them to call the `get_context` tool **on demand**:
 
-### Context Types
-File / Folder / Document / Skills / Terminal / Git
+- `get_context({ topic: "structure" })` → top-level layout summary (default, cheapest)
+- `get_context({ topic: "read_files" })` → files the main agent already read
+- `get_context({ topic: "shared" })` → output from sibling agents that already finished
+- `get_context({ topic: "full" })` → complete index, only when necessary
 
-### Permissions
-Configure per category: file read/write, terminal, git, diagnostics, web, tasks, checkpoints.
+This keeps per-agent prompts tiny and mirrors the opencode / TUI philosophy: **help the developer save tokens, not burn them.**
 
 ## Configuration
 
-`Cmd+,` → "VTE Agent": API Key, Base URL, Model, Permissions, Reasoning level, Task mode.
+All runtime configuration lives in the **in-app ConfigPanel** (open via the settings icon), *not* in the host's native settings UI. The ConfigPanel is a host-agnostic UI driven by the `webview ↔ host` protocol, so it works identically on VSCode, Web, CLI, etc.
+
+Configurable items include: API key / base URL / model (multi-profile), **sub-agent timeout (seconds)**, **force multi-agent delegation**, reasoning level, task mode, and per-category permissions.
+
+> Note: the VSCode host persists config into its own storage backend internally; the webview never reads or writes native settings directly.
+
+## Webview Component Conventions
+
+To stay host-portable and theme-adaptive, the webview uses **self-owned components** — never native HTML controls:
+
+- Reusable controls live in `webview/src/components/` (e.g. `NumberInput.vue`, `Toggle.vue`) and carry **no inline `<style>`**.
+- Shared styles live in `webview/src/theme.css` under the `c-` namespace (e.g. `.c-num-input`, `.c-toggle`), driven by `--vte-*` design tokens.
+- This lets the entire `c-` style block + `components/` directory be lifted into a standalone "code-agent framework" component library with zero changes.
 
 ## Built-in Skills
 
@@ -114,6 +133,22 @@ npm run compile && cd .. && npm run build:webview
 npm run watch          # Watch mode
 # Press F5 in VS Code to run
 ```
+
+Build outputs:
+- Extension: `out/vscode/panel.js` (via `tsc`)
+- Webview: `out/webview/index.html` (via `vite` single-file build — all JS/CSS inlined)
+
+## Planned Hosts
+
+The agent core is host-agnostic — it talks to the outside world only through
+`HostAdapter` (`src/host/types.ts`). VSCode is the first host; a **Web IDE host**
+is planned as the second host to prove the abstraction holds end-to-end.
+
+- Design: three-pane IDE (left = project management, middle = main-agent chat,
+  right = opencode-style tool/agent status), a Node + WebSocket backend running
+  the same `AgentEngine`/`AgentPool`/`AgentContextSystem`, and a Vue3 client
+  reusing the existing webview component library.
+- Full plan: [`docs/web-ide-host-plan.md`](docs/web-ide-host-plan.md).
 
 ## License
 

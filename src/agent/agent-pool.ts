@@ -13,6 +13,7 @@ import { HostAdapter, Sandbox } from '../host/types'
 import { VTEContextManager } from '../context/manager'
 import { ApiProtocol, ThinkingStyle, ReasoningLevel } from '../core/types'
 import { SharedContext } from './shared-context'
+import { AgentContextSystem } from './context-system'
 
 /**
  * A single message in an agent's conversation history.
@@ -74,8 +75,37 @@ export class AgentPool {
   private host: HostAdapter
   private workOrderPool: WorkOrderPool
   private communication: AgentCommunication
-  /** Phase 2: read-only shared context aggregated across all agents. */
-  private sharedContext = new SharedContext()
+  /**
+   * Phase 2: read-only shared context aggregated across all agents.
+   * This is the SAME instance the AgentContextSystem exposes via
+   * `get_context({ topic: 'shared' })`, so sub-agents retrieve sibling
+   * output on demand instead of having it pasted into their prompt.
+   */
+  private sharedContext = AgentContextSystem.instance.getShared()
+  /**
+   * Dedicated context authority for this delegation. Sub-agents query it
+   * via the `get_context` tool (on-demand, token-efficient) rather than
+   * receiving a context blob in their prompt. Kept as a field only for
+   * clarity; it resolves to the process-wide singleton.
+   */
+  private contextSystem = AgentContextSystem.instance
+
+  /**
+   * LLM config used when auto-provisioning agents during scheduling.
+   * Set by the host (panel) before delegation so that agents created via
+   * `ensureIdleAgent` get a *working* provider config instead of an empty
+   * one (which would make every sub-agent API call fail with 401).
+   */
+  private llmConfig?: {
+    model?: string
+    apiKey?: string
+    apiBase?: string
+    api?: ApiProtocol
+    thinkingStyle?: ThinkingStyle
+    reasoningLevel?: ReasoningLevel
+  }
+  /** Default execution timeout (ms) for sub-agent work orders. */
+  private defaultTimeout?: number
 
   constructor(host: HostAdapter, workOrderPool: WorkOrderPool, communication: AgentCommunication) {
     this.host = host
@@ -156,6 +186,18 @@ export class AgentPool {
 
   /** Pool-level update handler (set by panel) */
   onAgentUpdate?: (agentId: string, update: Record<string, unknown>) => void
+  /** Called when a new agent instance is auto-provisioned during scheduling. */
+  onAgentCreated?: () => void
+
+  /** Set the LLM config forwarded to auto-provisioned agents. */
+  setLlmConfig(cfg: NonNullable<AgentPool['llmConfig']>) {
+    this.llmConfig = cfg
+  }
+
+  /** Set the default execution timeout (ms) for sub-agent work orders. */
+  setDefaultTimeout(ms: number) {
+    this.defaultTimeout = ms
+  }
 
   /**
    * Get an idle agent, optionally filtered by role
@@ -170,6 +212,66 @@ export class AgentPool {
       return agent
     }
     return undefined
+  }
+
+  /**
+   * Return an idle agent for `roleId`, auto-provisioning a fresh instance
+   * when every existing instance is busy but the role's `maxConcurrent`
+   * cap hasn't been reached yet.
+   *
+   * This is the missing piece that makes `parallel` (and `pool`) scheduling
+   * actually run multiple orders of the same role concurrently. Without it,
+   * the scheduler was capped at the single manually-created instance per role
+   * and silently skipped the rest of the ready orders.
+   */
+  ensureIdleAgent(roleId?: string): AgentInstance | undefined {
+    console.log(`[VTE] ensureIdleAgent called: roleId=${roleId ?? 'undefined'}, totalAgents=${this.agents.size}`)
+    const idle = this.getIdleAgent(roleId)
+    if (idle) {
+      console.log(`[VTE] ensureIdleAgent: found idle agent ${idle.id} for role ${roleId}`)
+      return idle
+    }
+    if (!roleId) {
+      console.log(`[VTE] ensureIdleAgent: no roleId provided, returning undefined`)
+      return undefined
+    }
+
+    const role = getRoleById(roleId)
+    if (!role) {
+      console.error(`[VTE] ensureIdleAgent: unknown role "${roleId}", returning undefined`)
+      return undefined
+    }
+
+    // Count existing instances of this role.
+    let instanceCount = 0
+    for (const a of this.agents.values()) {
+      if (a.role.id === roleId) instanceCount++
+    }
+
+    console.log(`[VTE] ensureIdleAgent: role=${roleId}, instanceCount=${instanceCount}, maxConcurrent=${role.maxConcurrent}`)
+
+    // Respect the role's concurrency cap — don't spawn beyond maxConcurrent.
+    if (instanceCount >= role.maxConcurrent) {
+      console.log(`[VTE] ensureIdleAgent: maxConcurrent reached for ${roleId} (${instanceCount}/${role.maxConcurrent}), returning undefined`)
+      return undefined
+    }
+
+    try {
+      const agent = this.createAgent(role, {
+        model: this.llmConfig?.model,
+        apiKey: this.llmConfig?.apiKey,
+        apiBase: this.llmConfig?.apiBase,
+        api: this.llmConfig?.api,
+        thinkingStyle: this.llmConfig?.thinkingStyle,
+        reasoningLevel: this.llmConfig?.reasoningLevel,
+      })
+      console.log(`[VTE] Auto-provisioned ${role.id} agent ${agent.id} (${instanceCount + 1}/${role.maxConcurrent})`)
+      this.onAgentCreated?.()
+      return agent
+    } catch (err) {
+      console.error(`[VTE] Auto-provision failed for ${roleId}:`, err)
+      return undefined
+    }
   }
 
   /**
@@ -195,6 +297,9 @@ export class AgentPool {
     agent.status = 'busy'
     agent.currentOrderId = orderId
     this.workOrderPool.assign(orderId, agentId)
+    // Push the busy status immediately so the webview doesn't briefly show
+    // "completed" (idle) before the first streaming callback arrives.
+    this.onAgentUpdate?.(agentId, { status: 'busy' as const, currentOrderId: orderId })
     return true
   }
 
@@ -359,7 +464,7 @@ export class AgentPool {
 
     try {
       const prompt = this.buildOrderPrompt(order)
-      const timeout = order.timeoutMs || 5 * 60 * 1000
+      const timeout = order.timeoutMs || this.defaultTimeout || 5 * 60 * 1000  // Default 5 min (was 2 min; real tasks need ~15-20 LLM round-trips ≈ 2-5min)
 
       // Add task to conversation history
       agent.conversationHistory.push({
@@ -556,11 +661,13 @@ export class AgentPool {
       prompt += '\n'
     }
 
-    // Phase 2 — read-only shared context from sibling agents.
-    const shared = this.sharedContext.getContextForAgent(agent?.id)
-    if (shared) {
-      prompt += `${shared}\n\n`
-    }
+    // Context is NOT pasted into the prompt (that multiplies tokens across
+    // every parallel sub-agent). Instead the agent retrieves it on demand via
+    // the `get_context` tool — project structure, files the main agent
+    // already read, and completed sibling output. This is the opencode /
+    // TUI-style token-saving approach.
+    prompt += `## 上下文获取\n`
+    prompt += `不要假设项目结构。需要了解项目布局、主 agent 已读文件、或其他 agent 的产出时，调用 get_context 工具按需检索（topic: "structure" | "read_files" | "shared" | "full"）。\n\n`
 
     prompt += `请直接执行任务，完成后使用 task_update 将任务标记为 done。`
     return prompt
@@ -638,17 +745,43 @@ export class AgentPool {
     pm.setApiProtocol(role.api || 'chat')
     pm.setThinkingStyle(role.thinkingStyle || 'auto')
     pm.setReasoningLevel(role.reasoningLevel || 'medium')
-    // Disable tool calls — the PM must only return a JSON plan here.
-    pm.setAllowedTools([])
+    // The PM plans only — but it MAY query project structure on demand
+    // via get_context so it can assign concrete files. No other tools
+    // (no task_create / no permission prompts) so it only emits the plan.
+    pm.setAllowedTools(['get_context'])
 
     const prompt =
-      `你是项目经理 Agent。请分析下面的用户需求，将其拆解为可以由不同角色 Agent 并行或串行执行的子任务。\n\n` +
-      `可用角色：\n- dev：编写 / 修改代码\n- test：编写并运行测试\n- review：代码审查（只读，不修改）\n- doc：编写文档\n\n` +
-      `需求：\n${request}\n\n` +
-      `请仅输出一个 JSON 数组（不要任何解释文字，不要 markdown 代码块），每个元素格式：\n` +
-      `{\n  "title": "简短任务标题",\n  "description": "任务详细说明",\n  "role": "dev | test | review | doc",\n  "dependencies": ["前置任务的 title（无依赖则空数组"]\n}\n` +
-      `如果需求很简单、只需一个角色，也照此格式输出一个只含一个元素的数组。\n` +
-      `dependencies 里的 title 必须与前面某个任务的 title 完全一致，才能正确建立依赖。`
+      `你是一个需求拆解专家。你的任务是分析用户的【真实需求】，将其拆解为可由不同专业角色并行执行的、具体的、可操作的子任务。\n\n` +
+      `## 核心原则（必须严格遵守）\n` +
+      `1. **用户的原始输入就是待办事项本身**。如果用户说"帮我写一个CLI工具"，任务就是"编写CLI工具代码"而不是"写一篇关于如何写CLI的文章"。\n` +
+      `2. **忽略元指令**。如果用户说"模拟一下""测试一下""看看能不能"，这些只是触发方式，不是任务内容。只拆解用户真正想要完成的事。\n` +
+      `3. **每个任务必须具体到可以立即执行**。好的任务："在 src/cli.ts 新建入口文件，支持 add/list/done 三个命令"。坏的任务："设计 CLI 架构"（太抽象，无法直接执行）。\n` +
+      `4. **按角色专长分配**。代码实现→dev，写测试用例并运行→test，审查代码质量→review，写文档→doc。\n` +
+      `5. **最大限度并行——尽量不设依赖！** 只有当任务B真的无法在任务A开始执行之前开始时才设依赖。大多数情况下：dev/test/doc 的任务可以完全并行；review 可以等 dev 完成代码后再审。\n` +
+      `   ✅ 好的做法：dev写核心模块、test同时写测试框架、doc同时写README骨架 → 三者无依赖，并行执行。\n` +
+      `   ❌ 错误做法：test依赖dev"完成后才能开始"、doc依赖dev"完成后才能开始" → 变成串行等待。\n\n` +
+      `## 可用角色\n` +
+      `- dev：编写 / 修改 / 重构代码（前端、后端、脚本、配置等）\n` +
+      `- test：编写测试用例 / 运行测试 / 验证功能\n` +
+      `- review：代码审查（只读分析，不修改），检查质量/安全/性能\n` +
+      `- doc：编写文档（README、API 文档、使用指南等）\n\n` +
+      `## 拆解示例\n` +
+      `### 好的拆解\n` +
+      `用户需求："给项目加一个 CLI 待办工具，要支持增删查，还要有单元测试和 README"\n` +
+      `[{"title":"实现 CLI 入口与核心逻辑","description":"创建 src/cli.ts，使用 Commander.js 实现 todo add/list/done/delete 命令，数据存储在 JSON 文件","role":"dev","dependencies":[]},\n` +
+      `{"title":"编写单元测试","description":"为 CLI 的四个命令编写测试用例（基于接口契约mock），覆盖正常和异常路径，确保通过","role":"test","dependencies":[]},\n` +
+      `{"title":"编写 README 文档","description":"写一份 README.md，包含安装方法、用法示例、命令列表、项目结构说明","role":"doc","dependencies":[]}]\n\n` +
+      `### 差的拆解（禁止）\n` +
+      `用户需求同上 → 拆成以下（任一都禁止）：\n` +
+      `- ❌ 太抽象："设计系统架构"、"编写技术方案文档"、"调研 CLI 框架选型"（不能立即执行、偏离用户意图）\n` +
+      `- ❌ 依赖链串行：test依赖"dev完成后"、doc依赖"dev完成后"→ 本可并行的任务变成串行等待\n\n` +
+      `## 用户需求\n${request}\n\n` +
+      `## 项目上下文获取\n` +
+      `不要凭空假设项目结构。需要了解项目布局以便给子任务分配具体文件/命令时，调用 get_context 工具按需检索（topic: "structure" 取顶层结构概要，"full" 取完整索引）。\n\n` +
+      `## 输出要求\n` +
+      `请仅输出一个 JSON 数组（不要解释、不要 markdown 代码块）。每个元素格式：\n` +
+      `{\"title\":\"简短具体可执行的标题\",\"description\":\"详细说明（包含具体文件/命令/步骤）\",\"role\":\"dev|test|review|doc\",\"dependencies\":[]}\n` +
+      `dependencies 的 title 必须与前面某个任务的 title 完全一致。如果需求很简单只需一个角色，输出单元素数组即可。`
 
     let raw = ''
     try {
@@ -684,7 +817,12 @@ export class AgentPool {
       idMap[task.title] = order.id
       created.push(order)
     }
-    console.log(`[VTE] PM decomposed request into ${created.length} work orders`)
+    console.log(`[VTE] PM decomposed request into ${created.length} work orders:`)
+    for (const o of created) {
+      console.log(`[VTE]   → "${o.title}" [${o.requiredRole}] deps=[${o.dependencies.map(d => this.workOrderPool.get(d)?.title || d).join(', ')}]`)
+    }
+    const readyNow = this.workOrderPool.getReady()
+    console.log(`[VTE]   Immediately ready: ${readyNow.length}/${created.length} (others blocked by dependencies)`)
     return created
   }
 
@@ -715,14 +853,33 @@ export class AgentPool {
     if (!Array.isArray(parsed)) return []
 
     const validRoles = ['pm', 'dev', 'test', 'review', 'doc']
-    return parsed
+    // Normalization map: common LLM output variants → canonical role ID
+    const roleNorm: Record<string, string> = {
+      developer: 'dev', develop: 'dev', programming: 'dev', code: 'dev',
+      tester: 'test', testing: 'test', qa: 'test',
+      reviewer: 'review', reviewing: 'review', audit: 'review',
+      writer: 'doc', documentation: 'doc', documenting: 'doc', document: 'doc',
+      pm: 'pm', project: 'pm', manager: 'pm', planner: 'pm',
+    }
+    const normalized = parsed
       .filter((t: any) => t && typeof t.title === 'string')
-      .map((t: any) => ({
-        title: String(t.title),
-        description: typeof t.description === 'string' ? t.description : undefined,
-        role: validRoles.includes(t.role) ? t.role : 'dev',
-        dependencies: Array.isArray(t.dependencies) ? t.dependencies.map(String) : [],
-      }))
+      .map((t: any) => {
+        const rawRole = String(t.role || '').toLowerCase().trim()
+        const normalizedRole = validRoles.includes(rawRole)
+          ? rawRole
+          : (roleNorm[rawRole] || 'dev')
+        if (normalizedRole === 'dev' && rawRole && rawRole !== 'dev') {
+          console.log(`[VTE] PM extractPlan: normalized unknown role "${rawRole}" → "dev" for task "${t.title}"`)
+        }
+        return {
+          title: String(t.title),
+          description: typeof t.description === 'string' ? t.description : undefined,
+          role: normalizedRole,
+          dependencies: Array.isArray(t.dependencies) ? t.dependencies.map(String) : [],
+        }
+      })
+    console.log(`[VTE] PM extractPlan: ${normalized.length} tasks → [${normalized.map(t => `"${t.title}"(${t.role})`).join(', ')}]`)
+    return normalized
   }
 
   /**

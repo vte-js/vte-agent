@@ -55,6 +55,10 @@ export function useConfig() {
   const reasoningLevel = ref<ReasoningLevel>('medium')
   const lspProfiles = ref<Record<string, LspProfile>>({})
   const lspConfigProfiles = ref<Record<string, LspProfile>>({})
+  /** Sub-agent work-order timeout in seconds (host-agnostic config, not VSCode native settings). */
+  const subAgentTimeout = ref(300)
+  /** Force every chat message to use the multi-agent pipeline (host-agnostic config). */
+  const forceMultiAgent = ref(false)
   let isConfigEditorInitializing = false
 
   watch(configEditorVisible, (v) => {
@@ -71,20 +75,26 @@ export function useConfig() {
   onMessage((msg) => {
     if (msg.type === 'configData') {
       // Load multiple models from config
-      if (msg.models && Array.isArray(msg.models)) {
+      if (msg.models && Array.isArray(msg.models) && msg.models.length > 0) {
         models.value = msg.models
         activeModelIndex.value = msg.activeModelIndex ?? 0
       } else {
-        // Legacy: single model config
+        // No profiles yet — seed an empty default the user can fill in.
         models.value = [{
           name: 'Default',
-          apiKey: msg.apiKey || '',
-          apiBase: msg.apiBase || 'https://api.openai.com/v1',
-          model: msg.model || 'gpt-4',
+          apiKey: '',
+          apiBase: 'https://api.openai.com/v1',
+          model: 'gpt-4',
         }]
         activeModelIndex.value = 0
       }
       syncActiveModel()
+      if (typeof msg.subAgentTimeout === 'number') {
+        subAgentTimeout.value = msg.subAgentTimeout
+      }
+      if (typeof msg.forceMultiAgent === 'boolean') {
+        forceMultiAgent.value = msg.forceMultiAgent
+      }
     } else if (msg.type === 'configSaved') {
       // handled by parent
     } else if (msg.type === 'showSettings') {
@@ -180,6 +190,8 @@ export function useConfig() {
       type: 'saveModels',
       models: models.value,
       activeModelIndex: activeModelIndex.value,
+      subAgentTimeout: subAgentTimeout.value,
+      forceMultiAgent: forceMultiAgent.value,
     })
   }
 
@@ -240,7 +252,7 @@ export function useConfig() {
   return {
     configVisible, configEditorVisible, models, activeModelIndex,
     apiKey, apiBase, model, permissionConfig, reasoningLevel,
-    lspProfiles, lspConfigProfiles,
+    lspProfiles, lspConfigProfiles, subAgentTimeout, forceMultiAgent,
     toggleConfig, selectModel, addModel, updateModel, deleteModel, saveConfig, init,
     updatePermissionConfig, setReasoningLevel, setupLsp, testLsp,
     openConfigEditor, saveLspProfile, deleteLspProfile, addLspProfile,

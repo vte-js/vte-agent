@@ -93,7 +93,7 @@ export class WorkOrderPool {
       parentId: params.parentId,
       dependencies: params.dependencies || [],
       retries: 0,
-      maxRetries: params.maxRetries ?? 2,
+      maxRetries: params.maxRetries ?? 1,
       timeoutMs: params.timeoutMs ?? 0,
       createdAt: now,
       updatedAt: now,
@@ -185,6 +185,28 @@ export class WorkOrderPool {
       order.error = error
       order.updatedAt = new Date().toISOString()
       this.emit({ type: 'failed', orderId, timestamp: order.updatedAt, data: { error } })
+
+      // Cascade: fail any orders that are blocked depending on this failed order
+      this.cascadeFailures(orderId)
+    }
+  }
+
+  /**
+   * Cascade-fail all orders that are blocked and depend on the given failed order.
+   * This prevents permanently-stuck "blocked" orders from hanging the delegation.
+   */
+  private cascadeFailures(failedOrderId: string): void {
+    for (const order of this.orders.values()) {
+      if (order.status === 'blocked' && order.dependencies.includes(failedOrderId)) {
+        console.log(`[VTE] Cascade-failing blocked order "${order.title}" due to failed dependency ${failedOrderId}`)
+        // Force-fail immediately (skip retry — dependency is gone)
+        order.status = 'failed'
+        order.error = `前置任务失败: ${this.orders.get(failedOrderId)?.error || failedOrderId}`
+        order.updatedAt = new Date().toISOString()
+        this.emit({ type: 'failed', orderId: order.id, timestamp: order.updatedAt, data: { error: order.error } })
+        // Recursively cascade in case this order was also a dependency
+        this.cascadeFailures(order.id)
+      }
     }
   }
 
