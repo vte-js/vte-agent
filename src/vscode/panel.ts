@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AgentEngine, AgentMode } from '../agent/engine';
+import { resolveApiProtocol } from '../agent/reasoning';
 import { getAllTasks } from '../agent/tasks';
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../skills/builtin';
 import { getSessionStats, getRecentRecords } from '../agent/token-tracker';
@@ -344,6 +345,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'multiAgent:sendMessage':
           this.handleAgentMessage(message.from, message.to, message.type, message.content);
+          break;
+        case 'multiAgent:decomposeRequest':
+          this.handleDecomposeRequest(message.request);
           break;
       }
       } catch (err: any) {
@@ -1163,7 +1167,21 @@ Example usage here
         const ctx = new VTEContextManager(workspaceRoot);
         this.engine = new AgentEngine(ctx, model || cfgModel, apiKey, apiBase, workspaceRoot);
         this.engine.setReasoningLevel(this.reasoningLevel);
-        log(`[DEBUG] Engine created successfully`);
+
+        // Apply API protocol + thinking style from the active model profile.
+        // Falls back to 'chat' + 'auto' (style is inferred from the model name).
+        const profiles = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
+        const activeIdx = config.get<number>('activeModelIndex', 0);
+        const activeProfile = profiles[activeIdx];
+        // Smart-default the protocol when the profile doesn't set `api`:
+        // infer from (base URL + model), with the profile's own endpoint/model
+        // taking priority, then fall back to the top-level config.
+        const resolvedModel = activeProfile?.model || model || cfgModel;
+        const resolvedBase = activeProfile?.apiBase || apiBase;
+        const resolvedProtocol = resolveApiProtocol(activeProfile?.api, resolvedModel, resolvedBase);
+        this.engine.setApiProtocol(resolvedProtocol);
+        this.engine.setThinkingStyle(activeProfile?.thinkingStyle || 'auto');
+        log(`[DEBUG] Engine created: protocol=${resolvedProtocol}${activeProfile?.api ? '' : ' (auto)'} thinkingStyle=${activeProfile?.thinkingStyle || 'auto'} model=${resolvedModel} base=${resolvedBase}`);
 
         // Initialize host adapter for tools
         const messaging = new VSCodeMessaging();
@@ -1357,7 +1375,7 @@ Example usage here
     this.postMessage({ type: 'configSaved' });
   }
 
-  private async saveModels(models: Array<{ name: string; apiKey: string; apiBase: string; model: string }>, activeModelIndex: number) {
+  private async saveModels(models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>, activeModelIndex: number) {
     const config = vscode.workspace.getConfiguration('vteCode');
     await config.update('models', models, vscode.ConfigurationTarget.Global);
     await config.update('activeModelIndex', activeModelIndex, vscode.ConfigurationTarget.Global);
@@ -1379,7 +1397,7 @@ Example usage here
     const config = vscode.workspace.getConfiguration('vteCode');
     await config.update('activeModelIndex', index, vscode.ConfigurationTarget.Global);
 
-    const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string }>>('models', []);
+    const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
     const active = models[index];
     if (active) {
       await config.update('apiKey', active.apiKey, vscode.ConfigurationTarget.Global);
@@ -1683,7 +1701,7 @@ Example usage here
 
   private sendConfig() {
     const config = vscode.workspace.getConfiguration('vteCode');
-    const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string }>>('models', []);
+    const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
     const activeModelIndex = config.get<number>('activeModelIndex', 0);
 
     this.postMessage({
@@ -1836,7 +1854,7 @@ Example usage here
     log('Multi-agent system initialized');
   }
 
-  private handleCreateAgent(roleId: string, model?: string, apiKey?: string, apiBase?: string) {
+  private handleCreateAgent(roleId: string, model?: string, apiKey?: string, apiBase?: string, api?: string, thinkingStyle?: string, reasoningLevel?: string, isolation?: string) {
     this.initMultiAgent();
     if (!this.agentPool) return;
 
@@ -1854,6 +1872,10 @@ Example usage here
       model: model || config.get<string>('model', 'gpt-4'),
       apiKey: apiKey || config.get<string>('apiKey', ''),
       apiBase: apiBase || config.get<string>('apiBase', 'https://api.openai.com/v1'),
+      ...(api ? { api: api as 'chat' | 'responses' } : {}),
+      ...(thinkingStyle ? { thinkingStyle: thinkingStyle as 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' } : {}),
+      ...(reasoningLevel ? { reasoningLevel: reasoningLevel as 'low' | 'medium' | 'high' } : {}),
+      ...(isolation ? { isolation: isolation as 'shared' | 'snapshot' } : {}),
       workspaceRoot,
     });
 
@@ -1888,6 +1910,46 @@ Example usage here
     if (this.scheduler) {
       this.scheduler.start();
     }
+  }
+
+  /**
+   * Phase 3 — PM autonomous decomposition.
+   * The PM agent analyzes the high-level request and breaks it into
+   * WorkOrders; they are pushed and the scheduler is started so the
+   * (already-created) role agents begin executing.
+   */
+  private async handleDecomposeRequest(request?: string) {
+    if (!request || !request.trim()) {
+      this.postMessage({ type: 'toast', level: 'warning', text: '请输入要拆解的需求' });
+      return;
+    }
+    this.initMultiAgent();
+    if (!this.scheduler || !this.workOrderPool) return;
+
+    const config = vscode.workspace.getConfiguration('vteCode');
+    const model = config.get<string>('model', 'gpt-4');
+    const apiKey = config.get<string>('apiKey', '');
+    const apiBase = config.get<string>('apiBase', 'https://api.openai.com/v1');
+
+    this.postMessage({ type: 'toast', level: 'info', text: 'PM 正在拆解需求…' });
+    let orders;
+    try {
+      orders = await this.scheduler.decomposeRequest(request.trim(), { model, apiKey, apiBase });
+    } catch (err: any) {
+      this.postMessage({ type: 'toast', level: 'error', text: `PM 拆解失败：${err?.message || err}` });
+      return;
+    }
+
+    this.pushWorkOrders();
+    // Start the scheduler so idle role agents pick up the new orders.
+    this.scheduler.start();
+
+    this.postMessage({
+      type: 'toast',
+      level: 'success',
+      text: `PM 已拆解为 ${orders.length} 个子任务，开始执行`,
+    });
+    log(`PM decomposed request into ${orders.length} work orders`);
   }
 
   private handleStartScheduler(mode?: string) {

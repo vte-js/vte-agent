@@ -3,7 +3,7 @@
     <div class="panel-title">模型与参数</div>
     <div class="p-row">
       <span class="p-label">模型</span>
-      <ModelSelect :model-value="model" :options="modelOptions" @update:model-value="(v) => $emit('update:model', v)" />
+      <ModelSelect size="sm" :model-value="model" :options="modelOptions" @update:model-value="(v) => $emit('update:model', v)" />
     </div>
     <div class="p-row">
       <span class="p-label">随机性</span>

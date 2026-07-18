@@ -215,4 +215,16 @@ export class Scheduler {
 
     return created
   }
+
+  /**
+   * Phase 3 — PM autonomous decomposition.
+   * Delegates to the agent pool, which runs the PM agent over `request`
+   * and materializes the returned plan into WorkOrders.
+   */
+  async decomposeRequest(
+    request: string,
+    config: { model: string; apiKey: string; apiBase: string },
+  ): Promise<WorkOrder[]> {
+    return this.pool.decomposeRequest(request, config)
+  }
 }

@@ -16,25 +16,35 @@
     </div>
 
     <div class="conv-messages" ref="messagesEl">
-      <div v-if="history.length === 0" class="conv-empty">
+      <div v-if="processedHistory.length === 0" class="conv-empty">
         <span class="conv-empty-icon">{{ agent.role === 'dev' ? '💻' : agent.role === 'test' ? '🧪' : agent.role === 'review' ? '🔍' : '📋' }}</span>
         <span>{{ agent.roleName }} 空闲中</span>
       </div>
-      <div
-        v-for="(msg, idx) in history"
-        :key="`${agent.id}-${idx}-${msg.timestamp}`"
-        class="conv-msg"
-        :class="msg.role"
-      >
-        <div class="conv-msg-header">
-          <span class="conv-msg-role">{{ msg.role === 'user' ? '任务' : msg.role === 'assistant' ? agent.roleName : '系统' }}</span>
-          <span class="conv-msg-time">{{ formatTime(msg.timestamp) }}</span>
+      <template v-for="(msg, idx) in processedHistory" :key="`${agent.id}-${idx}-${msg.timestamp}`">
+        <!-- Tool call: lightweight shared line -->
+        <ToolLine v-if="msg.kind === 'tool'" :name="msg.tool?.name || ''" :status="msg.tool?.status || 'done'" />
+
+        <!-- Assistant turn: thinking + body + timestamp grouped -->
+        <div v-else-if="msg.role === 'assistant'" class="conv-turn">
+          <ThinkingBlock
+            :thinking="msg.thinking || ''"
+            :streaming="msg.streaming"
+            :has-body="!!msg.text"
+            :duration="msg.thinkingDuration"
+          />
+          <MessageBody v-if="msg.text" :text="msg.text" :streaming="msg.streaming" />
+          <span class="conv-ts">{{ formatTime(msg.timestamp) }}</span>
         </div>
-        <div class="conv-msg-text" v-html="renderMarkdown(msg.text)"></div>
-      </div>
+
+        <!-- User / system message: minimal -->
+        <div v-else class="conv-msg-mini" :class="msg.role">
+          <span class="conv-msg-label">{{ msg.role === 'user' ? '任务' : '系统' }}</span>
+          <span class="conv-msg-text" v-html="renderMarkdown(msg.text)"></span>
+        </div>
+      </template>
     </div>
 
-    <div class="conv-input" v-if="agent.status === 'idle'">
+    <div class="conv-input">
       <input
         v-model="inputText"
         class="conv-input-field"
@@ -53,11 +63,14 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../markdown'
-import type { AgentStatus } from '../composables/useMultiAgent'
+import ThinkingBlock from './ThinkingBlock.vue'
+import ToolLine from './ToolLine.vue'
+import MessageBody from './MessageBody.vue'
+import type { AgentStatus, AgentHistoryMessage } from '../composables/useMultiAgent'
 
 const props = defineProps<{
   agent: AgentStatus | null
-  history: Array<{ role: string; text: string; timestamp: string }>
+  history: AgentHistoryMessage[]
 }>()
 
 const emit = defineEmits<{
@@ -84,6 +97,23 @@ const statusLabel = computed(() => {
   return labels[props.agent.status] || props.agent.status
 })
 
+/** Fill missing thinkingDuration from timestamps (frontend safety net). */
+const processedHistory = computed(() => {
+  const src = props.history
+  if (!src.length) return src
+  // One-pass: remember each message's parsed ts for neighbor diff lookup.
+  const parsed = src.map(m => ({ m, ts: new Date(m.timestamp).getTime() }))
+  const out = parsed.map(({ m, ts }, idx) => {
+    if (m.role === 'assistant' && m.kind === 'text' && m.thinking?.trim() && m.thinkingDuration == null) {
+      const prevTs = idx > 0 ? parsed[idx - 1].ts : ts
+      const diff = ts - prevTs
+      return { ...m, thinkingDuration: diff > 0 ? diff : 2000 }
+    }
+    return m
+  })
+  return out
+})
+
 function formatTime(ts: string) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
@@ -95,7 +125,7 @@ function sendMessage() {
 }
 
 // Auto-scroll to bottom on new messages
-watch(() => props.history.length, () => {
+watch(() => processedHistory.value.length, () => {
   nextTick(() => {
     if (messagesEl.value) {
       messagesEl.value.scrollTop = messagesEl.value.scrollHeight
@@ -137,8 +167,8 @@ watch(() => props.history.length, () => {
 .conv-close:hover { background: rgba(255,255,255,0.08); }
 
 .conv-messages {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 8px;
-  display: flex; flex-direction: column; gap: 6px;
+  flex: 1; min-height: 0; overflow-y: auto; padding: 6px 10px;
+  display: flex; flex-direction: column; gap: 2px;
 }
 
 .conv-empty {
@@ -148,19 +178,33 @@ watch(() => props.history.length, () => {
 }
 .conv-empty-icon { font-size: 24px; }
 
-.conv-msg {
-  padding: 8px 10px; border-radius: 8px;
-  background: rgba(255,255,255,0.03);
+/* ── Assistant turn (thinking + body + time grouped) ── */
+.conv-turn {
+  padding: 4px 0;
 }
-.conv-msg.user { background: rgba(99,102,241,0.08); }
-.conv-msg.system { background: rgba(245,158,11,0.06); font-style: italic; }
 
-.conv-msg-header {
-  display: flex; justify-content: space-between; margin-bottom: 4px;
+/* Timestamp — subtle at end of turn */
+.conv-ts {
+  display: block; text-align: right;
+  font-size: 9px; color: var(--vte-text-muted, #666);
+  opacity: .45; margin-top: 3px;
 }
-.conv-msg-role { font-size: 10px; font-weight: 600; color: var(--vte-text-muted); }
-.conv-msg-time { font-size: 9px; color: var(--vte-text-muted); opacity: 0.6; }
-.conv-msg-text { font-size: 12px; line-height: 1.5; color: var(--vte-text); word-break: break-word; }
+
+/* ── User / system message: minimal single line or compact block ── */
+.conv-msg-mini {
+  padding: 3px 0; font-size: 12px;
+}
+.conv-msg-mini.user .conv-msg-label {
+  font-weight: 600; font-size: 10px;
+  color: var(--vte-primary, #6366f1); margin-right: 4px;
+}
+.conv-msg-mini.system .conv-msg-label {
+  font-weight: 600; font-size: 10px;
+  color: var(--vte-text-muted, #888); margin-right: 4px;
+}
+.conv-msg-mini .conv-msg-text {
+  color: var(--vte-text-muted, #aaa);
+}
 
 .conv-input {
   display: flex; gap: 6px; padding: 8px 12px;

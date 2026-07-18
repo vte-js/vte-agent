@@ -4,7 +4,7 @@
  */
 
 import * as path from 'path';
-import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint } from '../shared/types';
+import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint, ApiProtocol, ThinkingStyle, ReasoningLevel } from '../shared/types';
 import { formatIndexForLLM } from '../context/protocol';
 import {
   createTokenBudget,
@@ -31,6 +31,8 @@ import { registerTools, getAllTools } from './registry';
 import { TaskMode, analyzeComplexity, checkLLMLaziness, getComplexityInstruction } from './complexity';
 import { recordUsage, getSessionStats, getRecentRecords } from './token-tracker';
 import { PermissionConfig, DEFAULT_PERMISSION_CONFIG, getPermissionLevel, TOOL_CATEGORIES } from '../core/permissions';
+import { buildChatReasoningParams } from './reasoning';
+import { callResponsesAPI } from './responses-client';
 
 export type AgentMode = 'plan' | 'code';
 
@@ -66,6 +68,8 @@ export class AgentEngine {
   private _enforceRetryCount = 0;
   private _toolCallCount = 0;
   private static readonly MAX_TOOL_CALLS = 100;
+  /** Optional explicit tool whitelist. `null` = no tools, `undefined` = default. */
+  private _allowedTools?: string[] | null = undefined;
 
   constructor(
     context: ContextManager,
@@ -166,14 +170,33 @@ export class AgentEngine {
 
   // ── Reasoning Level ──
 
-  private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
+  private reasoningLevel: ReasoningLevel = 'medium';
+  // Which wire protocol / thinking dialect to use for this model.
+  private apiProtocol: ApiProtocol = 'chat';
+  private thinkingStyle: ThinkingStyle = 'auto';
 
-  setReasoningLevel(level: 'low' | 'medium' | 'high') {
+  setReasoningLevel(level: ReasoningLevel) {
     this.reasoningLevel = level;
   }
 
-  getReasoningLevel(): 'low' | 'medium' | 'high' {
+  getReasoningLevel(): ReasoningLevel {
     return this.reasoningLevel;
+  }
+
+  setApiProtocol(protocol: ApiProtocol) {
+    this.apiProtocol = protocol;
+  }
+
+  getApiProtocol(): ApiProtocol {
+    return this.apiProtocol;
+  }
+
+  setThinkingStyle(style: ThinkingStyle) {
+    this.thinkingStyle = style;
+  }
+
+  getThinkingStyle(): ThinkingStyle {
+    return this.thinkingStyle;
   }
 
   // ── Context Management (token-efficient, inspired by OpenCode) ──
@@ -220,10 +243,23 @@ export class AgentEngine {
   }
 
   private get tools(): ToolDefinition[] {
+    if (this._allowedTools !== undefined) {
+      if (this._allowedTools === null) return [];
+      return getAllTools().filter(t => this._allowedTools!.includes(t.name));
+    }
     if (this.mode === 'plan') {
       return getAllTools().filter(t => READ_ONLY_TOOL_NAMES.includes(t.name));
     }
     return getAllTools();
+  }
+
+  /**
+   * Restrict the tools this engine may call. Pass `null` to disable all
+   * tool calls (e.g. when the model should only return text), or an
+   * explicit name whitelist. Pass `undefined` to restore default behavior.
+   */
+  setAllowedTools(names?: string[] | null): void {
+    this._allowedTools = names;
   }
 
   /**
@@ -415,7 +451,26 @@ export class AgentEngine {
   }
 
   private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {
-    console.log(`[VTE][DEBUG] callLLM START: ${this.messages.length} messages in history`);
+    console.log(`[VTE][DEBUG] callLLM START: ${this.messages.length} messages in history (protocol=${this.apiProtocol})`);
+
+    // ── Responses API branch (native reasoning models: o-series, gpt-5.x) ──
+    if (this.apiProtocol === 'responses') {
+      return callResponsesAPI({
+        apiBase: this.apiBase,
+        apiKey: this.apiKey,
+        model: this.model,
+        messages: this.messages,
+        instructions: systemContent,
+        tools: this.tools,
+        temperature,
+        topP,
+        maxTokens,
+        reasoningLevel: this.reasoningLevel,
+        abortSignal: this.abortController?.signal,
+        onEvent: (e) => this.onViewUpdate?.(e),
+      });
+    }
+
     // Build API messages with proper content format
     const apiMessages = [
       { role: 'system', content: systemContent },
@@ -443,6 +498,16 @@ export class AgentEngine {
     const multimodalCount = apiMessages.filter((m: any) => Array.isArray(m.content) && m.content.length > 1).length;
     console.log(`[VTE][DEBUG] API request: ${apiMessages.length} messages, ${multimodalCount} multimodal`);
 
+    // Build reasoning params that actually take effect on this backend
+    // (reasoning_effort for OpenAI reasoning models, enable_thinking+budget for
+    // Qwen/MiMo, thinking budget for Anthropic, temperature-only otherwise).
+    const reasoning = buildChatReasoningParams({
+      level: this.reasoningLevel,
+      style: this.thinkingStyle,
+      model: this.model,
+      baseTemperature: temperature ?? 0.7,
+    });
+
     const request: LLMRequest = {
       model: this.model,
       messages: apiMessages as any[],
@@ -454,19 +519,18 @@ export class AgentEngine {
           parameters: t.parameters,
         },
       })),
-      // Temperature: high reasoning uses lower temperature for more focused output
-      temperature: this.reasoningLevel === 'high' ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7),
       stream: true,
       stream_options: { include_usage: true },
       ...(topP !== undefined && { top_p: topP }),
       ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-      // Thinking mode: controlled by reasoning level
-      ...(this.reasoningLevel !== 'low' ? { chat_template_kwargs: { enable_thinking: true } } : {}),
+      // Only send temperature when the backend accepts it (reasoning models reject it).
+      ...(reasoning.dropTemperature ? {} : { temperature: reasoning.temperature }),
+      ...(reasoning.reasoning_effort ? { reasoning_effort: reasoning.reasoning_effort } : {}),
+      ...(reasoning.chat_template_kwargs ? { chat_template_kwargs: reasoning.chat_template_kwargs } : {}),
+      ...(reasoning.thinking ? { thinking: reasoning.thinking } : {}),
     };
 
-    const thinkingEnabled = this.reasoningLevel !== 'low';
-    const effectiveTemp = this.reasoningLevel === 'high' ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7);
-    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${effectiveTemp} stream=true thinking=${thinkingEnabled} reasoning=${this.reasoningLevel}`);
+    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${reasoning.dropTemperature ? 'omit' : reasoning.temperature} effort=${reasoning.reasoning_effort ?? '-'} thinking=${JSON.stringify(reasoning.chat_template_kwargs ?? reasoning.thinking ?? 'none')} reasoning=${this.reasoningLevel}`);
 
     const response = await fetch(`${this.apiBase}/chat/completions`, {
       method: 'POST',

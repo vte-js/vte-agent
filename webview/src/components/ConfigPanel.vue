@@ -256,7 +256,7 @@ const emit = defineEmits<{
   close: []
   save: [config: { apiKey: string; apiBase: string; model: string }]
   selectModel: [index: number]
-  saveModel: [index: number, profile: { name: string; apiKey: string; apiBase: string; model: string }]
+  saveModel: [index: number, profile: { name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }]
   deleteModel: [index: number]
   'update:mode': [mode: AgentMode]
   'update:taskMode': [taskMode: TaskMode]

@@ -179,12 +179,21 @@
           "default": [
             {
               "name": "MiMo v2.5",
-              "apiKey": "sk-cr6eamy65pfxcl85tdsff1rr1py9602h55qclwhb4a0a6ox0",
+              "apiKey": "",
               "apiBase": "https://api.xiaomimimo.com/v1",
               "model": "mimo-v2.5"
             }
           ],
-          "description": "Model profiles"
+          "description": "Model profiles. Each profile: { name, apiKey, apiBase, model }. The wire protocol (Chat Completions vs OpenAI Responses API) and thinking style are auto-inferred from the base URL + model name — no manual setup needed. To override the protocol explicitly, use the built-in model settings UI (gear icon) where an 'API 协议' selector is available. Leave this raw list for advanced JSON editing only.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "apiBase": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          }
         },
         "vteCode.activeModelIndex": {
           "type": "number",

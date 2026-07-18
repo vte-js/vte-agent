@@ -29,6 +29,8 @@
       v-if="workOrderBoardVisible"
       :orders="multiAgent.workOrders.value"
       @create-order="multiAgent.createWorkOrder({ title: '新任务', requiredRole: 'dev' })"
+      @decompose="(request) => multiAgent.decomposeRequest(request)"
+      @select="(id) => selectedOrderId = id"
     />
     <!-- Main content area with optional agent conversation sidebar -->
     <div class="main-content-row" :class="{ 'has-sidebar': multiAgent.activeAgentId.value }">
@@ -50,9 +52,8 @@
       @send-message="(text) => multiAgent.sendAgentMessage(multiAgent.activeAgentId.value!, text)"
     />
     </div>
-    <!-- Input area (hidden when agent conversation is active) -->
+    <!-- Input area -->
     <InputArea
-      v-if="!multiAgent.activeAgentId.value"
       :token-stats="chat.tokenStats.value"
       :busy="chat.busy.value"
       :edit-ref="editRef"
@@ -70,6 +71,12 @@
       @delete-model="onDeleteModel"
       @update:reasoning-level="config.setReasoningLevel"
       @open-lsp="lspPanelVisible = true"
+    />
+    <!-- Work Order Detail overlay (absolute, pinned to main-area right edge) -->
+    <WorkOrderDetail
+      v-if="selectedOrder"
+      :order="selectedOrder"
+      @close="selectedOrderId = null"
     />
   </div>
   <ConfigPanel
@@ -162,6 +169,7 @@ import LspControlPanel from './components/LspControlPanel.vue'
 import LspConfigEditor from './components/LspConfigEditor.vue'
 import AgentDashboard from './components/AgentDashboard.vue'
 import WorkOrderBoard from './components/WorkOrderBoard.vue'
+import WorkOrderDetail from './components/WorkOrderDetail.vue'
 import AgentConversation from './components/AgentConversation.vue'
 import { useChat } from './composables/useChat'
 import { useMode } from './composables/useMode'
@@ -182,6 +190,10 @@ const sessionsVisible = ref(false)
 const skillsVisible = ref(false)
 const agentDashboardVisible = ref(false)
 const workOrderBoardVisible = ref(false)
+const selectedOrderId = ref<string | null>(null)
+const selectedOrder = computed(() =>
+  multiAgent.workOrders.value.find(o => o.id === selectedOrderId.value) || null
+)
 const tokenPanelOpen = ref(false)
 const editRef = ref('')
 const editContext = ref<import('./protocol').ContextAttachment[]>([])

@@ -1,9 +1,19 @@
 <template>
   <div class="work-order-board">
-    <div class="board-header">
-      <span class="board-title">工单面板</span>
-      <button class="btn btn-sm" @click="$emit('createOrder')">+ 新建工单</button>
-    </div>
+  <div class="board-header">
+    <span class="board-title">工单面板</span>
+    <button class="btn btn-sm" @click="$emit('createOrder')">+ 新建工单</button>
+  </div>
+  <div class="decompose-bar">
+    <input
+      v-model="decomposeInput"
+      class="decompose-input"
+      type="text"
+      placeholder="用一句话描述需求，让 PM 自动拆解（如：给登录模块加单元测试并写文档）"
+      @keyup.enter="onDecompose"
+    />
+    <button class="btn btn-sm btn-primary" :disabled="!decomposeInput.trim()" @click="onDecompose">PM 拆解</button>
+  </div>
 
     <div class="board-columns">
       <!-- Pending -->
@@ -13,7 +23,7 @@
           <span class="column-count">{{ pendingOrders.length }}</span>
         </div>
         <div class="column-body">
-          <div v-for="order in pendingOrders" :key="order.id" class="order-card">
+          <div v-for="order in pendingOrders" :key="order.id" class="order-card" @click="selectOrder(order)">
             <div class="order-title">{{ order.title }}</div>
             <div class="order-meta">
               <span class="order-priority" :class="order.priority">{{ order.priority }}</span>
@@ -32,7 +42,7 @@
           <span class="column-count">{{ runningOrders.length }}</span>
         </div>
         <div class="column-body">
-          <div v-for="order in runningOrders" :key="order.id" class="order-card active">
+          <div v-for="order in runningOrders" :key="order.id" class="order-card active" @click="selectOrder(order)">
             <div class="order-title">{{ order.title }}</div>
             <div class="order-meta">
               <span class="order-role" v-if="order.requiredRole">{{ order.requiredRole }}</span>
@@ -50,7 +60,7 @@
           <span class="column-count">{{ doneOrders.length }}</span>
         </div>
         <div class="column-body">
-          <div v-for="order in doneOrders.slice(0, 10)" :key="order.id" class="order-card completed">
+          <div v-for="order in doneOrders.slice(0, 10)" :key="order.id" class="order-card completed" @click="selectOrder(order)">
             <div class="order-title">{{ order.title }}</div>
             <div class="order-meta">
               <span class="order-role" v-if="order.requiredRole">{{ order.requiredRole }}</span>
@@ -67,7 +77,7 @@
           <span class="column-count">{{ failedOrders.length }}</span>
         </div>
         <div class="column-body">
-          <div v-for="order in failedOrders" :key="order.id" class="order-card error">
+          <div v-for="order in failedOrders" :key="order.id" class="order-card error" @click="selectOrder(order)">
             <div class="order-title">{{ order.title }}</div>
             <div class="order-error" v-if="order.error">{{ order.error }}</div>
           </div>
@@ -78,16 +88,31 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import type { WorkOrderStatus } from '../composables/useMultiAgent'
 
 const props = defineProps<{
   orders: WorkOrderStatus[]
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   createOrder: []
+  decompose: [request: string]
+  select: [orderId: string]
 }>()
+
+const decomposeInput = ref('')
+
+function onDecompose() {
+  const text = decomposeInput.value.trim()
+  if (!text) return
+  emit('decompose', text)
+  decomposeInput.value = ''
+}
+
+function selectOrder(order: WorkOrderStatus) {
+  emit('select', order.id)
+}
 
 const pendingOrders = computed(() => props.orders.filter(o => o.status === 'pending' || o.status === 'assigned'))
 const runningOrders = computed(() => props.orders.filter(o => o.status === 'running'))
@@ -96,13 +121,40 @@ const failedOrders = computed(() => props.orders.filter(o => o.status === 'faile
 </script>
 
 <style scoped>
-.work-order-board { padding: 12px; }
+.work-order-board {
+  padding: 12px;
+  flex-shrink: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
 
 .board-header {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 12px;
 }
 .board-title { font-size: 14px; font-weight: 600; color: var(--vte-text); }
+
+.decompose-bar {
+  display: flex; gap: 6px; margin-bottom: 12px;
+}
+.decompose-input {
+  flex: 1; min-width: 0;
+  padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--vte-border);
+  background: rgba(0,0,0,0.2); color: var(--vte-text);
+  font-size: 12px; outline: none;
+}
+.decompose-input::placeholder { color: var(--vte-text-muted); }
+.decompose-input:focus { border-color: rgba(99,102,241,0.6); }
+.btn-primary {
+  padding: 6px 12px; border-radius: 6px; border: none;
+  font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff;
+  transition: all 0.15s;
+}
+.btn-primary:hover:not(:disabled) { opacity: 0.9; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
 
 .btn {
   padding: 5px 10px; border-radius: 6px; border: none;
@@ -145,7 +197,10 @@ const failedOrders = computed(() => props.orders.filter(o => o.status === 'faile
 .order-card {
   padding: 8px 10px; border-radius: 6px;
   background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04);
+  cursor: pointer; transition: background 0.12s, border-color 0.12s;
 }
+.order-card:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+.order-card:active { transform: scale(0.99); }
 .order-card.active { border-color: rgba(245,158,11,0.2); background: rgba(245,158,11,0.04); }
 .order-card.completed { opacity: 0.6; }
 .order-card.error { border-color: rgba(239,68,68,0.2); background: rgba(239,68,68,0.04); }

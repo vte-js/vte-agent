@@ -82,7 +82,7 @@ export type HostToWebviewMessage =
   | { type: 'filePickerResult'; files: ContextAttachment[] }
   | { type: 'gitData'; changes: string[]; commits: Array<{ hash: string; message: string }> }
   | { type: 'cleared' }
-  | { type: 'configData'; apiKey: string; apiBase: string; model: string }
+  | { type: 'configData'; apiKey: string; apiBase: string; model: string; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }> }
   | { type: 'configSaved' }
   | { type: 'showSettings' }
   | { type: 'modeChanged'; mode: 'plan' | 'code' }

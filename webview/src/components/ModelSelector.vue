@@ -66,6 +66,15 @@
                 <label>模型</label>
                 <input v-model="form.model" placeholder="gpt-4" class="model-form-input" />
               </div>
+              <div class="model-form-field">
+                <label>API 协议</label>
+                <ModelSelect
+                  :model-value="form.api"
+                  :options="apiProtocolOptions"
+                  :allow-custom="false"
+                  @update:model-value="(v: string) => form.api = v as ApiProtocolChoice"
+                />
+              </div>
               <div class="model-form-actions">
                 <button class="model-form-cancel" @click="cancelEdit">取消</button>
                 <button class="model-form-save" @click="saveEdit">保存</button>
@@ -80,13 +89,18 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import ModelSelect from './ModelSelect.vue'
 
 export interface ModelProfile {
   name: string
   apiKey: string
   apiBase: string
   model: string
+  api?: 'chat' | 'responses'
 }
+
+// '' means "auto" (infer from base URL + model name)
+export type ApiProtocolChoice = '' | 'chat' | 'responses'
 
 const props = defineProps<{
   models: ModelProfile[]
@@ -102,9 +116,16 @@ const emit = defineEmits<{
 const modalOpen = ref(false)
 const editing = ref(false)
 const editIndex = ref(-1)
-const form = ref<ModelProfile>({ name: '', apiKey: '', apiBase: '', model: '' })
+const form = ref<{ name: string; apiKey: string; apiBase: string; model: string; api: ApiProtocolChoice }>({ name: '', apiKey: '', apiBase: '', model: '', api: '' })
 
 const currentName = computed(() => props.models[props.activeIndex]?.model || '选择模型')
+
+// API protocol options for the inline dropdown ('' === auto-infer)
+const apiProtocolOptions = [
+  { value: '', label: '自动（按地址 + 模型推断）' },
+  { value: 'chat', label: 'Chat Completions' },
+  { value: 'responses', label: 'Responses API' },
+]
 
 function maskKey(key: string) {
   if (!key) return '未设置'
@@ -129,13 +150,14 @@ function selectModel(i: number) {
 
 function startAdd() {
   editIndex.value = -1
-  form.value = { name: '', apiKey: '', apiBase: 'https://api.openai.com/v1', model: 'gpt-4' }
+  form.value = { name: '', apiKey: '', apiBase: 'https://api.openai.com/v1', model: 'gpt-4', api: '' }
   editing.value = true
 }
 
 function startEdit(i: number) {
   editIndex.value = i
-  form.value = { ...props.models[i] }
+  const m = props.models[i]
+  form.value = { name: m.name, apiKey: m.apiKey, apiBase: m.apiBase, model: m.model, api: m.api ?? '' }
   editing.value = true
 }
 
@@ -144,7 +166,15 @@ function cancelEdit() {
 }
 
 function saveEdit() {
-  emit('save', editIndex.value, { ...form.value })
+  const api = form.value.api === '' ? undefined : form.value.api
+  const profile: ModelProfile = {
+    name: form.value.name,
+    apiKey: form.value.apiKey,
+    apiBase: form.value.apiBase,
+    model: form.value.model,
+    ...(api ? { api } : {}),
+  }
+  emit('save', editIndex.value, profile)
   editing.value = false
 }
 
@@ -224,11 +254,11 @@ function deleteModel(i: number) {
 .model-form-title { font-size: 13px; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
 .model-form-field label { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
 .model-form-input {
-  width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);
-  background: rgba(0,0,0,0.2); color: #e2e8f0; font-size: 13px; outline: none;
-  box-sizing: border-box;
+  width: 100%; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--vte-input-border);
+  background: var(--vte-input-bg); color: var(--vte-text); font-size: 13px; outline: none;
+  box-sizing: border-box; min-height: 34px;
 }
-.model-form-input:focus { border-color: #6366f1; }
+.model-form-input:focus { border-color: var(--vte-primary); }
 .model-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .model-form-cancel {
   padding: 7px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);

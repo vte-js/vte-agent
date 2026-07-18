@@ -168,7 +168,12 @@ function onConfirmConfig(config: { model: string; apiKey: string; apiBase: strin
 </script>
 
 <style scoped>
-.agent-dashboard { padding: 12px; }
+.agent-dashboard {
+  padding: 12px;
+  flex-shrink: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
 
 .dashboard-header {
   display: flex; align-items: center; justify-content: space-between;

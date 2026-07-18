@@ -5,6 +5,17 @@
 import { ref, computed } from 'vue'
 import { useHost } from './useHost'
 
+export interface AgentHistoryMessage {
+  role: string
+  text: string
+  timestamp: string
+  kind?: 'text' | 'tool'
+  thinking?: string
+  streaming?: boolean
+  tool?: { name: string; status: 'running' | 'done' | 'error'; result?: string }
+  thinkingDuration?: number
+}
+
 export interface AgentStatus {
   id: string
   role: string
@@ -13,7 +24,7 @@ export interface AgentStatus {
   currentOrderId?: string
   completedOrders: number
   failedOrders: number
-  conversationHistory: Array<{ role: string; text: string; timestamp: string }>
+  conversationHistory: AgentHistoryMessage[]
 }
 
 export interface WorkOrderStatus {
@@ -92,8 +103,26 @@ export function useMultiAgent() {
     send({ type: 'multiAgent:createAgent', roleId })
   }
 
-  function createAgentWithConfig(roleId: string, config: { model: string; apiKey: string; apiBase: string }) {
-    send({ type: 'multiAgent:createAgent', roleId, model: config.model, apiKey: config.apiKey, apiBase: config.apiBase })
+  function createAgentWithConfig(roleId: string, config: {
+    model: string
+    apiKey: string
+    apiBase: string
+    isolation?: 'shared' | 'snapshot'
+    api?: 'chat' | 'responses'
+    thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
+    reasoningLevel?: 'low' | 'medium' | 'high'
+  }) {
+    send({
+      type: 'multiAgent:createAgent',
+      roleId,
+      model: config.model,
+      apiKey: config.apiKey,
+      apiBase: config.apiBase,
+      ...(config.isolation ? { isolation: config.isolation } : {}),
+      ...(config.api ? { api: config.api } : {}),
+      ...(config.thinkingStyle ? { thinkingStyle: config.thinkingStyle } : {}),
+      ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel } : {}),
+    })
   }
 
   function createWorkOrder(params: {
@@ -105,6 +134,11 @@ export function useMultiAgent() {
     timeoutMs?: number
   }) {
     send({ type: 'multiAgent:createOrder', ...params })
+  }
+
+  /** Phase 3 — ask the PM agent to decompose a high-level request. */
+  function decomposeRequest(request: string) {
+    send({ type: 'multiAgent:decomposeRequest', request })
   }
 
   function startScheduler(mode?: string) {
@@ -139,6 +173,7 @@ export function useMultiAgent() {
     createAgent,
     createAgentWithConfig,
     createWorkOrder,
+    decomposeRequest,
     startScheduler,
     stopScheduler,
     selectAgent,

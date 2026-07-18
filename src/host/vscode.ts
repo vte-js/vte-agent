@@ -7,9 +7,10 @@
 import * as vscode from 'vscode'
 import {
   HostAdapter, HostFileSystem, HostWorkspace, HostUI,
-  HostMessaging, HostShell, HostLSP, Disposable,
+  HostMessaging, HostShell, HostLSP, Disposable, HostSandbox,
 } from './types'
 import type { ToolDefinition } from '../core/types'
+import { GitWorktreeSandbox } from './sandbox-git'
 
 // ── VSCode File System ──
 
@@ -238,6 +239,7 @@ export class VSCodeHostAdapter implements HostAdapter {
   messaging: HostMessaging
   shell: HostShell = new VSCodeShell()
   lsp: HostLSP = new VSCodeLSP()
+  sandbox: HostSandbox = new GitWorktreeSandbox()
   lspTools: ToolDefinition[]
 
   constructor(messaging: VSCodeMessaging) {

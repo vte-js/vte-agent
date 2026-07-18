@@ -15,6 +15,12 @@ export interface AgentRole {
   model?: string
   apiKey?: string
   apiBase?: string
+  /** Wire protocol override (chat / responses). Empty = engine default */
+  api?: 'chat' | 'responses'
+  /** How this agent expresses reasoning effort */
+  thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
+  /** Reasoning strength for this agent */
+  reasoningLevel?: 'low' | 'medium' | 'high'
   /** Tool name whitelist — empty = all tools */
   tools?: string[]
   /** Max concurrent tasks for this role */

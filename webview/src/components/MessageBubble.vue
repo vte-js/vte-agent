@@ -8,21 +8,14 @@
       <AgentAvatar class="ml-icon" :speaking="isStreaming" compact />
       VTE Agent
     </div>
-    <!-- Thinking: animation below name, content below animation -->
-    <div v-if="msg.role === 'assistant' && msg.thinkingPhase && !msg.text" class="think-anim">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="think-t">思考中...</span>
-    </div>
-    <!-- Thinking content - collapsible, hidden by default -->
-    <div v-if="msg.role === 'assistant' && msg.thinkingText && msg.text" class="think-collapsible">
-      <button class="think-toggle" @click="showThinking = !showThinking">
-        <svg :class="{ rotated: showThinking }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="6 9 12 15 18 9"/></svg>
-        <span>思考过程</span>
-      </button>
-      <div v-if="showThinking" class="think-content">
-        <div class="tc-body">{{ msg.thinkingText }}</div>
-      </div>
-    </div>
+    <!-- Thinking: shared block (live indicator + collapsible) -->
+    <ThinkingBlock
+      v-if="msg.role === 'assistant' && (msg.thinkingPhase || !!msg.thinkingText)"
+      :thinking="msg.thinkingText || ''"
+      :streaming="isStreaming"
+      :has-body="!!msg.text"
+      :duration="msg.thinkingDuration"
+    />
     <div v-if="msg.text || msg.images?.length || msg.context?.length || isError || (msg.role === 'assistant' && msg.thinkingText && msg.text) || msg.role !== 'assistant'" class="mb">
       <!-- Context file cards -->
       <div v-if="msg.role === 'user' && msg.context?.length" class="msg-context">
@@ -47,12 +40,11 @@
         </svg>
         <span>{{ errorText }}</span>
       </div>
-      <div v-else-if="msg.role === 'assistant'" class="mt" v-html="renderedText"></div>
+      <MessageBody v-else-if="msg.role === 'assistant'" :text="msg.text" :streaming="isStreaming" />
       <div v-else class="mt">{{ msg.text }}</div>
       <!-- Tool calls below text so they stay visible at bottom -->
       <ToolCallBlock v-if="msg.role === 'assistant' && msg.toolCalls?.length" :tool-calls="msg.toolCalls" />
       <TaskPanel v-if="msg.role === 'assistant' && msg.tasks?.length" :tasks="msg.tasks!" />
-      <span v-if="isStreaming" class="stream-cursor"></span>
       <button v-if="msg.role === 'assistant' && mode === 'plan'" class="exec-plan" @click="$emit('executePlan', msg.text)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         切换到编码模式并执行
@@ -101,7 +93,8 @@
 import { ref, computed } from 'vue'
 import type { ChatMessage } from '../composables/useChat'
 import type { AgentMode } from '../composables/useMode'
-import { renderMarkdown } from '../markdown'
+import ThinkingBlock from './ThinkingBlock.vue'
+import MessageBody from './MessageBody.vue'
 import VTooltip from './VTooltip.vue'
 import ToolCallBlock from './ToolCallBlock.vue'
 import TaskPanel from './TaskPanel.vue'
@@ -124,9 +117,7 @@ const emit = defineEmits<{
 const editing = ref(false)
 const editText = ref('')
 const editInput = ref<HTMLTextAreaElement>()
-const showThinking = ref(false)
 
-const renderedText = computed(() => renderMarkdown(props.msg.text))
 const isError = computed(() => props.msg.text?.startsWith('⚠️') || false)
 const errorText = computed(() => props.msg.text?.replace(/^⚠️\s*/, '') || '')
 const copied = ref(false)

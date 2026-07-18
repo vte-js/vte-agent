@@ -109,6 +109,51 @@ export interface AgentMessage {
   tool_call_id?: string  // Required for tool role messages (MiMo API)
 }
 
+// ── Reasoning / Protocol Types ──
+
+/**
+ * Which wire protocol to speak to the backend.
+ * - 'chat'      → POST {base}/chat/completions  (OpenAI Chat Completions, the de-facto standard)
+ * - 'responses' → POST {base}/responses          (OpenAI Responses API, native reasoning models)
+ */
+export type ApiProtocol = 'chat' | 'responses'
+
+/**
+ * User-facing reasoning level (three-step selector in the UI).
+ */
+export type ReasoningLevel = 'low' | 'medium' | 'high'
+
+/**
+ * Backend reasoning effort. Superset used by both Responses API and
+ * Chat Completions `reasoning_effort`. Not every value is valid for every
+ * model — the backend clamps unsupported values.
+ */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+/**
+ * How a given backend expresses "thinking". Decides which request fields we emit.
+ * - 'openai'    → standard `reasoning_effort` (Chat) / `reasoning.effort` (Responses). o-series, gpt-5.x
+ * - 'qwen'      → private `chat_template_kwargs.enable_thinking` (+ optional budget). Qwen3, MiMo, DeepSeek-compatible
+ * - 'anthropic' → `thinking: { type, budget_tokens }`
+ * - 'none'      → non-reasoning model; emit nothing, only steer via temperature + prompt
+ * - 'auto'      → infer from model name at request time
+ */
+export type ThinkingStyle = 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
+
+/**
+ * A configured model the user can switch between.
+ */
+export interface ModelProfile {
+  name: string
+  apiKey: string
+  apiBase: string
+  model: string
+  /** Wire protocol. Defaults to 'chat'. */
+  api?: ApiProtocol
+  /** How this backend expresses thinking. Defaults to 'auto'. */
+  thinkingStyle?: ThinkingStyle
+}
+
 // ── LLM Types ──
 
 export interface LLMMessage {
@@ -128,6 +173,38 @@ export interface LLMRequest {
   stream_options?: { include_usage?: boolean }
   chat_template_kwargs?: Record<string, unknown>
   thinking?: { type: string; budget_tokens: number }
+  /** OpenAI Chat Completions standard reasoning control (o-series, gpt-5.x). */
+  reasoning_effort?: ReasoningEffort
+}
+
+// ── OpenAI Responses API Types ──
+
+/**
+ * A single item in the Responses API `input` array.
+ * Simplified to what this client emits/consumes.
+ */
+export interface ResponsesInputItem {
+  role?: 'system' | 'developer' | 'user' | 'assistant'
+  content?: string | Array<{ type: string; text?: string }>
+  type?: string
+  // function_call / function_call_output passthrough fields
+  call_id?: string
+  name?: string
+  arguments?: string
+  output?: string
+}
+
+export interface ResponsesRequest {
+  model: string
+  input: ResponsesInputItem[]
+  instructions?: string
+  tools?: unknown[]
+  temperature?: number
+  top_p?: number
+  max_output_tokens?: number
+  stream?: boolean
+  reasoning?: { effort?: ReasoningEffort; summary?: 'auto' | 'concise' | 'detailed' }
+  text?: { verbosity?: 'low' | 'medium' | 'high' }
 }
 
 export interface LLMResponse {

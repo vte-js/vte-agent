@@ -51,6 +51,42 @@
               <span class="form-hint">留空使用主 Agent 配置</span>
             </div>
 
+            <!-- API protocol -->
+            <div class="form-group">
+              <label class="form-label">API 协议</label>
+              <ModelSelect
+                :model-value="form.api"
+                :options="apiOptions"
+                :allow-custom="false"
+                @update:model-value="(v: string) => form.api = v as 'chat' | 'responses'"
+              />
+              <span class="form-hint">该 Agent 使用的连线协议，留空默认 Chat</span>
+            </div>
+
+            <!-- Reasoning style -->
+            <div class="form-group">
+              <label class="form-label">推理风格</label>
+              <ModelSelect
+                :model-value="form.thinkingStyle"
+                :options="thinkingOptions"
+                :allow-custom="false"
+                @update:model-value="(v: string) => form.thinkingStyle = v as ThinkingStyle"
+              />
+              <span class="form-hint">该后端如何表达推理强度</span>
+            </div>
+
+            <!-- Reasoning level -->
+            <div class="form-group">
+              <label class="form-label">推理强度</label>
+              <ModelSelect
+                :model-value="form.reasoningLevel"
+                :options="reasoningOptions"
+                :allow-custom="false"
+                @update:model-value="(v: string) => form.reasoningLevel = v as ReasoningLevel"
+              />
+              <span class="form-hint">低 / 中 / 高（中为高默认）</span>
+            </div>
+
             <!-- Execution mode -->
             <div class="form-group">
               <label class="form-label">执行环境</label>
@@ -80,6 +116,10 @@
 <script setup lang="ts">
 import { ref, reactive, watch } from 'vue'
 import type { AgentRole } from '../../src/agent/agent-role'
+import ModelSelect from './ModelSelect.vue'
+
+type ThinkingStyle = 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
+type ReasoningLevel = 'low' | 'medium' | 'high'
 
 const props = defineProps<{
   visible: boolean
@@ -93,8 +133,33 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: []
-  confirm: [config: { model: string; apiKey: string; apiBase: string; isolation: string }]
+  confirm: [config: {
+    model: string
+    apiKey: string
+    apiBase: string
+    isolation: string
+    api?: 'chat' | 'responses'
+    thinkingStyle?: ThinkingStyle
+    reasoningLevel?: ReasoningLevel
+  }]
 }>()
+
+const apiOptions = [
+  { value: 'chat', label: 'Chat Completions (默认)' },
+  { value: 'responses', label: 'Responses API' },
+]
+const thinkingOptions = [
+  { value: 'auto', label: '自动（按模型推断）' },
+  { value: 'openai', label: 'OpenAI (reasoning_effort)' },
+  { value: 'qwen', label: 'Qwen/MiMo (enable_thinking)' },
+  { value: 'anthropic', label: 'Anthropic (thinking budget)' },
+  { value: 'none', label: '无（仅温度）' },
+]
+const reasoningOptions = [
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中（默认）' },
+  { value: 'high', label: '高' },
+]
 
 const showKey = ref(false)
 
@@ -113,6 +178,9 @@ const form = reactive({
   apiKey: '',
   apiBase: '',
   isolation: 'shared' as string,
+  api: '' as '' | 'chat' | 'responses',
+  thinkingStyle: '' as '' | ThinkingStyle,
+  reasoningLevel: '' as '' | ReasoningLevel,
 })
 
 // Initialize with global config when dialog opens
@@ -122,6 +190,9 @@ watch(() => props.visible, (v) => {
     form.apiKey = ''
     form.apiBase = ''
     form.isolation = props.role.isolation || 'shared'
+    form.api = ''
+    form.thinkingStyle = ''
+    form.reasoningLevel = ''
     showKey.value = false
   }
 })
@@ -132,6 +203,9 @@ function confirm() {
     apiKey: form.apiKey || props.globalConfig.apiKey,
     apiBase: form.apiBase || props.globalConfig.apiBase,
     isolation: form.isolation,
+    ...(form.api ? { api: form.api } : {}),
+    ...(form.thinkingStyle ? { thinkingStyle: form.thinkingStyle } : {}),
+    ...(form.reasoningLevel ? { reasoningLevel: form.reasoningLevel } : {}),
   })
 }
 </script>
@@ -176,11 +250,12 @@ function confirm() {
 .form-group { margin-top: 14px; }
 .form-label { display: block; font-size: 11px; font-weight: 500; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; }
 .form-input {
-  width: 100%; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px; background: rgba(0,0,0,0.2); color: #e2e8f0;
+  width: 100%; padding: 7px 12px; border: 1px solid var(--vte-input-border);
+  border-radius: 8px; background: var(--vte-input-bg); color: var(--vte-text);
   font-size: 13px; font-family: inherit; outline: none; box-sizing: border-box;
+  min-height: 34px;
 }
-.form-input:focus { border-color: rgba(99,102,241,0.5); }
+.form-input:focus { border-color: var(--vte-primary); }
 .form-hint { font-size: 10px; color: #475569; margin-top: 4px; display: block; }
 
 .input-row { display: flex; gap: 6px; }

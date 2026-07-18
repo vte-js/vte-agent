@@ -102,6 +102,36 @@ export interface HostGit {
   revParse(args: string): Promise<string>
 }
 
+// ── Sandbox (Optional) ──
+//
+// Isolated workspace copies. An agent with `isolation: 'snapshot'` gets a
+// Sandbox rooted at a throwaway path so it can read/write freely without
+// touching the main workspace until changes are explicitly merged back.
+//
+// This is the host abstraction for "sandbox isolation" — backends are
+// host-specific (git worktree / container / directory clone). Hosts that
+// cannot isolate a filesystem (e.g. a pure web playground) simply omit
+// `sandbox`, and the agent pool gracefully falls back to the shared root.
+
+export interface Sandbox {
+  /** Root path of the isolated workspace copy. */
+  readonly root: string
+  /** Optionally commit current sandbox changes. */
+  commit?(message?: string): void
+  /**
+   * Merge sandbox changes back into the main workspace.
+   * Returns whether the merge succeeded plus a human-readable summary.
+   */
+  merge(): { merged: boolean; summary: string }
+  /** Discard the sandbox and release its resources (worktree / copy). */
+  destroy(): void
+}
+
+export interface HostSandbox {
+  /** Create an isolated copy scoped to `scope` (typically an agent id). */
+  create(scope: string, baseRoot?: string): Sandbox
+}
+
 // ── Host Adapter (Main Interface) ──
 
 export interface HostAdapter {
@@ -116,6 +146,9 @@ export interface HostAdapter {
   shell?: HostShell
   lsp?: HostLSP
   git?: HostGit
+
+  /** Optional isolated-workspace factory (sandbox isolation). */
+  sandbox?: HostSandbox
 
   /** LSP tool definitions (goto_definition, hover, references, etc.) */
   lspTools?: ToolDefinition[]

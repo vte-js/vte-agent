@@ -5,6 +5,14 @@
  */
 
 export function renderMarkdown(text: string): string {
+  // Strip LLM-internal XML tags that are not meant for display
+  // (<system-reminder>, <next_step>, <thinking>, etc.)
+  text = text
+    .replace(/<(system-reminder|thinking|next_step|response|format|reasoning|instruction)[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/?(system-reminder|thinking|next_step|response|format|reasoning|instruction)[^>]*>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
   // Protect code blocks from further processing
   const codeBlocks: string[] = []
   let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {

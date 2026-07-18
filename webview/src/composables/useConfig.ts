@@ -8,6 +8,7 @@ export interface ModelProfile {
   apiKey: string
   apiBase: string
   model: string
+  api?: 'chat' | 'responses'
 }
 
 export interface PermissionConfig {

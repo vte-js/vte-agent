@@ -27,6 +27,7 @@ export interface ChatMessage {
   streaming?: boolean
   thinkingPhase?: boolean
   thinkingText?: string
+  thinkingDuration?: number
   toolCalls?: ToolCallEvent[]
   images?: ImageAttachment[]
   context?: ContextAttachment[]
@@ -48,6 +49,7 @@ export function useChat(mode: () => string) {
   const messages = ref<FlowMessage[]>([])
   const busy = ref(false)
   let turnContentStarted = false
+  let thinkingStartTime = 0
   // Incremented on tool_call/tool_result so MessageList can auto-scroll
   const toolUpdateTick = ref(0)
   const nextStepSuggestion = ref('')
@@ -90,6 +92,7 @@ export function useChat(mode: () => string) {
         prev.thinkingPhase = false
       }
       turnContentStarted = false
+      thinkingStartTime = Date.now()
       // Create new streaming message for this turn
       messages.value.push({
         id: nextId++, role: 'assistant', text: '',
@@ -106,7 +109,14 @@ export function useChat(mode: () => string) {
       if (!turnContentStarted) {
         turnContentStarted = true
         const sm = findStreamingMsg()
-        if (sm) sm.thinkingPhase = false
+        if (sm) {
+          sm.thinkingPhase = false
+          // Thinking just ended — record duration
+          const elapsed = Date.now() - thinkingStartTime
+          if (elapsed > 0 && thinkingStartTime > 0) {
+            sm.thinkingDuration = elapsed
+          }
+        }
       }
       const sm = findStreamingMsg()
       if (sm) {
@@ -118,6 +128,10 @@ export function useChat(mode: () => string) {
         sm.text = msg.text
         sm.streaming = false
         sm.thinkingPhase = false
+        // Safety net: fill missing thinkingDuration
+        if (!sm.thinkingDuration && thinkingStartTime > 0) {
+          sm.thinkingDuration = Date.now() - thinkingStartTime
+        }
       } else {
         messages.value.push({
           id: nextId++, role: 'assistant', text: msg.text,

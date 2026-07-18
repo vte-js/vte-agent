@@ -29,6 +29,7 @@ export class AgentEngine {
   private tokenBudget: TokenBudget
   private onEvent?: (event: AgentEvent) => void
   private customTools?: ToolDefinition[]
+  private reasoningLevel: 'low' | 'medium' | 'high' = 'medium'
 
   // Context management: keep only recent messages, summarize old ones
   private readonly MAX_HISTORY_MESSAGES = 20
@@ -40,6 +41,14 @@ export class AgentEngine {
     this.onEvent = options.onEvent
     this.customTools = options.tools
     this.tokenBudget = createTokenBudget()
+  }
+
+  setReasoningLevel(level: 'low' | 'medium' | 'high') {
+    this.reasoningLevel = level
+  }
+
+  getReasoningLevel(): 'low' | 'medium' | 'high' {
+    return this.reasoningLevel
   }
 
   setFeedback(feedback: Array<{ userMessage: string; assistantMessage: string; rating: 'up' | 'down'; comment?: string; timestamp: string }>) {
@@ -272,16 +281,17 @@ export class AgentEngine {
           parameters: t.parameters,
         },
       })),
-      temperature: temperature ?? 0.7,
+      // High reasoning → lower temperature for more focused output.
+      temperature: this.reasoningLevel === 'high' ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7),
       stream: true,
       stream_options: { include_usage: true },
       ...(topP !== undefined && { top_p: topP }),
       ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-      // Thinking mode: OpenAI compatible format
-      chat_template_kwargs: { enable_thinking: true },
+      // Thinking: gated by reasoning level (low = off for real token savings).
+      chat_template_kwargs: { enable_thinking: this.reasoningLevel !== 'low' },
     }
 
-    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature} stream=true thinking=true`)
+    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature} stream=true thinking=${this.reasoningLevel !== 'low'} reasoning=${this.reasoningLevel}`)
 
     const response = await fetch(`${this.config.apiBase}/chat/completions`, {
       method: 'POST',
