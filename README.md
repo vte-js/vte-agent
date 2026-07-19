@@ -138,17 +138,40 @@ Build outputs:
 - Extension: `out/vscode/panel.js` (via `tsc`)
 - Webview: `out/webview/index.html` (via `vite` single-file build — all JS/CSS inlined)
 
-## Planned Hosts
+## Planned / In-Progress Hosts
 
 The agent core is host-agnostic — it talks to the outside world only through
 `HostAdapter` (`src/host/types.ts`). VSCode is the first host; a **Web IDE host**
-is planned as the second host to prove the abstraction holds end-to-end.
+is the second host, built to prove the abstraction holds end-to-end
+(a pure-Node process running the same core, instead of the VSCode extension host).
 
 - Design: three-pane IDE (left = project management, middle = main-agent chat,
   right = opencode-style tool/agent status), a Node + WebSocket backend running
   the same `AgentEngine`/`AgentPool`/`AgentContextSystem`, and a Vue3 client
-  reusing the existing webview component library.
+  reusing the existing webview component library (`webview/src/theme.css`, `c-` namespace).
 - Full plan: [`docs/web-ide-host-plan.md`](docs/web-ide-host-plan.md).
+- Status: **M1–M5 complete and verified** (`web-ide/`). The `WebIDEHostAdapter`
+  (`web-ide/server/host-adapter.ts`) is a pure-Node `HostAdapter` with **zero
+  `vscode` imports**; the backend boots, the three-pane client builds, and all
+  milestones pass:
+  - **M1** — scaffold + mock chat streaming ✅
+  - **M2** — left-panel file tree (`fs:list`/`fs:read`) + live Git status ✅
+  - **M3** — center panel reuses webview `MessageList`/`InputArea`/`ActiveAgents` ✅
+  - **M4** — right panel reuses `AgentDashboard`/`WorkOrderBoard`/`TokenStats` ✅
+  - **M5** — server-side config persistence (`.vte/config.json`); API keys never
+    leave the server — browser receives masked `'***'` ✅
+  - **M6** — DoD verified: core-layer `grep vscode` clean, shell/git tools work
+    in Node, multi-agent dashboard wired end-to-end ✅
+  Run it:
+  ```bash
+  cd web-ide
+  npm install                 # installs ws / tsx / vite / vue locally
+  VTE_MOCK=1 npm run dev      # server :3000 (ws /ws) + client :5173
+  # or, for a real model:
+  VTE_API_KEY=... VTE_MODEL=gpt-4o-mini npm run dev
+  # build & serve from the Node server:
+  npm run build && VTE_MOCK=1 npm run start   # open http://localhost:3000
+  ```
 
 ## License
 

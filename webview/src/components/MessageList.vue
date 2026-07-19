@@ -1,16 +1,24 @@
 <template>
   <div class="msgs" ref="listEl" @scroll="onScroll">
     <div v-if="messages.length === 0" class="empty">
-      <div class="empty-icon-wrap">
-        <AgentAvatar />
+      <div class="empty-fox">
+        <div class="empty-fox-inner"><AgentAvatar /></div>
       </div>
-      <div class="empty-title">VTE Agent</div>
-      <div class="empty-sub">AI Code Agent</div>
+      <h1 class="empty-title">VTE Agent</h1>
+      <p class="empty-sub">AI 编程助手 · 多智能体协作 · 代码理解与生成</p>
       <div class="empty-hints">
-        <div class="empty-hint">搜索项目中的 TypeScript 文件</div>
-        <div class="empty-hint">读取 src/index.ts 的内容</div>
-        <div class="empty-hint">帮我重构这个函数</div>
+        <button
+          v-for="hint in hints"
+          :key="hint.text"
+          class="empty-hint"
+          type="button"
+          @click="$emit('suggest', hint.text)"
+        >
+          <span class="empty-hint-icon" v-html="hint.svg"></span>
+          <span class="empty-hint-text">{{ hint.text }}</span>
+        </button>
       </div>
+      <p class="empty-foot">在下方输入消息，或点选上方示例开始对话</p>
     </div>
     <template v-for="msg in messages" :key="msg.id">
       <MessageBubble :msg="msg as ChatMessage" :mode="mode"
@@ -44,11 +52,31 @@ const props = defineProps<{
   toolTick?: number
 }>()
 
+const hints: { text: string; svg: string }[] = [
+  {
+    text: '搜索项目中的 TypeScript 文件',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+  },
+  {
+    text: '读取 src/index.ts 的内容',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  },
+  {
+    text: '帮我重构这个函数',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+  },
+  {
+    text: '解释这段代码的逻辑',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"/></svg>',
+  },
+]
+
 defineEmits<{
   executePlan: [text: string]
   deleteMessage: [id: number]
   startEdit: [text: string, id: number, context: import('../protocol').ContextAttachment[]]
   feedback: [messageId: number, rating: 'up' | 'down', comment?: string]
+  suggest: [text: string]
 }>()
 
 const listEl = ref<HTMLElement>()

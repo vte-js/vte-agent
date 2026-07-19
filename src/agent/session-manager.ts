@@ -47,6 +47,33 @@ export class SessionManager {
     return path.join(this.sessionsDir, sessionId)
   }
 
+  private activePath(): string {
+    return path.join(this.sessionsDir, '_active.json')
+  }
+
+  /**
+   * Persisted pointer to the currently-active session for this workspace.
+   * Lets a host resume the last conversation across reloads instead of
+   * always starting a fresh session. Returns null when none is set.
+   */
+  getActiveSessionId(): string | null {
+    try {
+      const content = fs.readFileSync(this.activePath(), 'utf-8')
+      const parsed = JSON.parse(content)
+      return typeof parsed.id === 'string' ? parsed.id : null
+    } catch {
+      return null
+    }
+  }
+
+  setActiveSessionId(id: string | null): void {
+    try {
+      fs.writeFileSync(this.activePath(), JSON.stringify({ id }))
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   // ── CRUD Operations ──
 
   async createSession(name?: string, model?: string): Promise<SessionMeta> {

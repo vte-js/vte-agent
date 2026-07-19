@@ -6,6 +6,7 @@
  */
 
 import type { ToolDefinition } from '../core/types'
+import type { HistoryStore } from '../agent/history-store'
 
 // ── Disposable ──
 
@@ -149,6 +150,9 @@ export interface HostAdapter {
 
   /** Optional isolated-workspace factory (sandbox isolation). */
   sandbox?: HostSandbox
+
+  /** Optional conversation-history store (auto save/restore current chat). */
+  history?: HistoryStore
 
   /** LSP tool definitions (goto_definition, hover, references, etc.) */
   lspTools?: ToolDefinition[]

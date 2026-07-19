@@ -29,6 +29,7 @@ export function useSession() {
 
   const sessions = ref<SessionMeta[]>([])
   const currentSession = ref<SessionData | null>(null)
+  const currentSessionId = ref<string | null>(null)
   const loading = ref(false)
   const error = ref('')
   const successMessage = ref('')
@@ -36,14 +37,17 @@ export function useSession() {
   onMessage((msg) => {
     if (msg.type === 'session:list') {
       sessions.value = msg.sessions
+      if ('currentSessionId' in msg) currentSessionId.value = (msg as any).currentSessionId ?? null
     } else if (msg.type === 'session:created') {
       sessions.value.unshift(msg.session)
       currentSession.value = { metadata: msg.session, messages: [] }
+      currentSessionId.value = msg.session.id
       successMessage.value = '会话已创建'
       setTimeout(() => successMessage.value = '', 2000)
     } else if (msg.type === 'session:data') {
       currentSession.value = msg.session
     } else if (msg.type === 'session:restored') {
+      if (msg.sessionId) currentSessionId.value = msg.sessionId
       successMessage.value = '会话已恢复'
       setTimeout(() => successMessage.value = '', 2000)
     } else if (msg.type === 'session:deleted') {
@@ -51,6 +55,7 @@ export function useSession() {
       if (currentSession.value?.metadata.id === msg.sessionId) {
         currentSession.value = null
       }
+      if (currentSessionId.value === msg.sessionId) currentSessionId.value = null
       successMessage.value = '会话已删除'
       setTimeout(() => successMessage.value = '', 2000)
     } else if (msg.type === 'session:renamed') {
@@ -129,6 +134,7 @@ export function useSession() {
   return {
     sessions,
     currentSession,
+    currentSessionId,
     loading,
     error,
     successMessage,

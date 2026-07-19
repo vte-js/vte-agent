@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useVsCode } from './useVsCode'
 import type { TokenStatsData } from '../components/TokenStats'
 import type { ImageAttachment, ContextAttachment } from '../protocol'
@@ -62,6 +62,9 @@ export function useChat(mode: () => string) {
     perModel: {},
   })
   const showTokenStats = ref(false)
+  // Last-saved history metadata (driven by server `chat:saved`).
+  const historySavedAt = ref<number | null>(null)
+  const historyCount = ref(0)
 
   onMessage((msg) => {
     function findStreamingMsg(): ChatMessage | undefined {
@@ -178,6 +181,11 @@ export function useChat(mode: () => string) {
     } else if (msg.type === 'cleared') {
       messages.value = []
       tokenStats.value = { totalPrompt: 0, totalCompletion: 0, totalTokens: 0, totalCost: 0, requestCount: 0, perModel: {} }
+      historySavedAt.value = null
+      historyCount.value = 0
+    } else if (msg.type === 'chat:saved') {
+      historySavedAt.value = msg.savedAt ?? null
+      historyCount.value = msg.count ?? 0
     } else if (msg.type === 'tasks') {
       // Find the streaming message (has text content) to attach tasks to
       const sm = findStreamingMsg()
@@ -214,7 +222,32 @@ export function useChat(mode: () => string) {
     }
   })
 
-  function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number, images?: ImageAttachment[], context?: ContextAttachment[]) {
+  // Auto-persist the conversation (debounced). The server keys it by the
+  // active workspace, so switching workspaces no longer loses history.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+  watch(messages, () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      const msgs = messages.value
+        .filter((m): m is ChatMessage => (m as ChatMessage).role != null)
+        .map((m) => {
+          const c = m as ChatMessage
+          return {
+            id: c.id,
+            role: c.role,
+            text: c.text,
+            timestamp: c.timestamp,
+            thinkingText: c.thinkingText,
+            images: c.images,
+            context: c.context,
+            toolCalls: c.toolCalls,
+          }
+        })
+      send({ type: 'chat:save', messages: msgs, tokenStats: tokenStats.value })
+    }, 1000)
+  }, { deep: true })
+
+  function sendChat(text: string, model: string, temperature: number, topP: number, maxTokens: number, images?: ImageAttachment[], context?: ContextAttachment[], regenerateFromUserIndex?: number) {
     nextStepSuggestion.value = '' // Clear suggestion when user sends new message
     messages.value.push({
       id: nextId++,
@@ -227,7 +260,7 @@ export function useChat(mode: () => string) {
     } as ChatMessage)
     busy.value = true
     turnContentStarted = false
-    send({ type: 'chat', text, model, temperature, topP, maxTokens, images, context })
+    send({ type: 'chat', text, model, temperature, topP, maxTokens, images, context, regenerateFromUserIndex })
   }
 
   function deleteMessage(id: number) {
@@ -235,16 +268,35 @@ export function useChat(mode: () => string) {
     if (idx !== -1) messages.value.splice(idx, 1)
   }
 
+  /**
+   * Edit & re-send a past message. We branch the conversation from that
+   * message's position: drop it and everything after it, then push the
+   * updated text as the new turn at the same spot. `regenerateFromUserIndex`
+   * tells the server which user message to truncate history after.
+   */
   function resendMessage(id: number, newText: string, model: string, temperature: number, topP: number, maxTokens: number, context?: ContextAttachment[]) {
     const idx = messages.value.findIndex(m => m.id === id)
     if (idx === -1) return
+    // Count how many user messages exist up to and including the edited one.
+    let userIndex = -1
+    for (let i = 0; i <= idx; i++) {
+      const m = messages.value[i]
+      if (m.type === 'chat' && (m as ChatMessage).role === 'user') userIndex++
+    }
+    // Drop the edited message and everything after it locally.
     messages.value.splice(idx)
-    sendChat(newText, model, temperature, topP, maxTokens, undefined, context)
+    // Re-send from that position.
+    sendChat(newText, model, temperature, topP, maxTokens, undefined, context, userIndex)
   }
 
   function clear() {
     messages.value = []
     send({ type: 'clear' })
+  }
+
+  /** Ask the server to re-load the saved conversation for this workspace. */
+  function loadHistory() {
+    send({ type: 'chat:load' } as any)
   }
 
   function stop() {
@@ -273,5 +325,5 @@ export function useChat(mode: () => string) {
     send({ type: 'feedback', messageId, rating, comment, userMessage: userText, assistantMessage: msg.text.slice(0, 500) })
   }
 
-  return { messages, busy, tokenStats, showTokenStats, toolUpdateTick, nextStepSuggestion, sendChat, clear, stop, executePlan, deleteMessage, resendMessage, sendFeedback }
+  return { messages, busy, tokenStats, showTokenStats, toolUpdateTick, nextStepSuggestion, historySavedAt, historyCount, sendChat, clear, stop, loadHistory, executePlan, deleteMessage, resendMessage, sendFeedback }
 }

@@ -56,7 +56,46 @@
               </div>
               <div class="model-form-field">
                 <label>API 密钥</label>
-                <input v-model="form.apiKey" type="password" placeholder="sk-..." class="model-form-input" />
+                <div class="api-key-wrap">
+                  <input
+                    :value="keyInputDisplay"
+                    @input="onKeyInput"
+                    :type="showKey ? 'text' : 'password'"
+                    :placeholder="keyPlaceholder"
+                    :readonly="isKeyMaskedDisplay"
+                    class="model-form-input"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <div class="api-key-actions">
+                    <!-- Masked state: clear button (lets the user input a new key) -->
+                    <button
+                      v-if="isKeyMaskedDisplay"
+                      type="button"
+                      class="api-key-action"
+                      title="清空并输入新值"
+                      @click="form.apiKey = ''"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                    <!-- Editable state: eye toggle for plaintext preview while typing -->
+                    <button
+                      v-else
+                      type="button"
+                      class="api-key-action"
+                      :title="showKey ? '隐藏' : '显示明文'"
+                      @click="showKey = !showKey"
+                    >
+                      <svg v-if="!showKey" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    </button>
+                  </div>
+                </div>
+                <div v-if="wasKeyMasked" class="api-key-hint">
+                  密钥已保存（出于安全考虑不可查看，18 个 <code>•</code> 为固定占位）。
+                  点 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="9" height="9" style="vertical-align:-1px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  清空后输入新值即可替换；留空保存则保留原密钥。
+                </div>
               </div>
               <div class="model-form-field">
                 <label>API 地址</label>
@@ -117,8 +156,41 @@ const modalOpen = ref(false)
 const editing = ref(false)
 const editIndex = ref(-1)
 const form = ref<{ name: string; apiKey: string; apiBase: string; model: string; api: ApiProtocolChoice }>({ name: '', apiKey: '', apiBase: '', model: '', api: '' })
+/** Show the API key as plaintext while the user is typing. Defaults to
+ *  hidden (password dots). The "view original saved key" feature is NOT
+ *  possible because the host never sends the real key to the browser —
+ *  it only sends the '***' sentinel. */
+const showKey = ref(false)
+/** True when editing a profile whose key was already saved on the host
+ *  (and is therefore masked as '***' on the wire). Used to switch the
+ *  field into read-only "saved" display mode and to render the hint. */
+const wasKeyMasked = ref(false)
+/** Fixed-width placeholder shown when the saved key is being represented
+ *  without revealing its content. 18 dots reads as "a real key is here"
+ *  rather than the misleading 3-char '***' (which browsers also render
+ *  as 3 password dots). */
+const SAVED_KEY_PLACEHOLDER = '••••••••••••••••••'
 
 const currentName = computed(() => props.models[props.activeIndex]?.model || '选择模型')
+
+const keyPlaceholder = computed(() => {
+  if (editIndex.value === -1) return 'sk-...'
+  return '输入新值替换'
+})
+
+/** Display value for the API key input. When the form carries the '***'
+ *  sentinel, show a fixed 18-dot placeholder so the field doesn't look
+ *  empty or like just 3 password dots. */
+const keyInputDisplay = computed(() => {
+  if (form.value.apiKey === '***') return SAVED_KEY_PLACEHOLDER
+  return form.value.apiKey
+})
+const isKeyMaskedDisplay = computed(() => form.value.apiKey === '***')
+
+function onKeyInput(e: Event) {
+  const target = e.target as HTMLInputElement
+  form.value.apiKey = target.value
+}
 
 // API protocol options for the inline dropdown ('' === auto-infer)
 const apiProtocolOptions = [
@@ -152,13 +224,29 @@ function startAdd() {
   editIndex.value = -1
   form.value = { name: '', apiKey: '', apiBase: 'https://api.openai.com/v1', model: 'gpt-4', api: '' }
   editing.value = true
+  showKey.value = false
+  wasKeyMasked.value = false
 }
 
 function startEdit(i: number) {
   editIndex.value = i
   const m = props.models[i]
-  form.value = { name: m.name, apiKey: m.apiKey, apiBase: m.apiBase, model: m.model, api: m.api ?? '' }
+  // The host never sends the real key over the wire; it always arrives as
+  // '***' when a key has been saved. We keep that sentinel in the form so
+  // (a) the user sees "***" instead of the browser rendering three dots,
+  // and (b) the sentinel is preserved on save — the host treats '***' as
+  // "keep the existing key" instead of overwriting it with empty.
+  const masked = m.apiKey === '***'
+  form.value = {
+    name: m.name,
+    apiKey: masked ? '***' : m.apiKey,
+    apiBase: m.apiBase,
+    model: m.model,
+    api: m.api ?? '',
+  }
   editing.value = true
+  showKey.value = false
+  wasKeyMasked.value = masked
 }
 
 function cancelEdit() {
@@ -167,6 +255,10 @@ function cancelEdit() {
 
 function saveEdit() {
   const api = form.value.api === '' ? undefined : form.value.api
+  // Treat empty submit on a previously-masked profile as "keep existing".
+  if (wasKeyMasked.value && form.value.apiKey.trim() === '') {
+    form.value.apiKey = '***'
+  }
   const profile: ModelProfile = {
     name: form.value.name,
     apiKey: form.value.apiKey,
@@ -270,6 +362,38 @@ function deleteModel(i: number) {
   background: #6366f1; color: #fff; font-size: 13px; font-weight: 500; cursor: pointer;
 }
 .model-form-save:hover { background: #5558e6; }
+
+/* API key field with clear / eye actions */
+.api-key-wrap { position: relative; }
+.api-key-wrap .model-form-input {
+  padding-right: 36px;
+  font-family: var(--vscode-editor-font-family, 'SF Mono', Monaco, Menlo, Consolas, monospace);
+  letter-spacing: 1px;  /* extra spacing makes 18 dots read as a real key */
+}
+.api-key-wrap .model-form-input[readonly] {
+  cursor: default;     /* hint that this isn't a normal editable field */
+  color: var(--vte-text-muted);
+}
+.api-key-actions { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); display: flex; gap: 2px; }
+.api-key-action {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: none; border-radius: 5px;
+  color: #94a3b8; cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.api-key-action:hover { background: rgba(255,255,255,0.08); color: #e2e8f0; }
+.api-key-hint {
+  font-size: 11px; color: #94a3b8; line-height: 1.6;
+  margin-top: 6px; padding: 6px 8px;
+  border-radius: 6px; background: rgba(99,102,241,0.06);
+  border: 1px solid rgba(99,102,241,0.15);
+}
+.api-key-hint code {
+  font-family: var(--vscode-editor-font-family, 'SF Mono', Monaco, Menlo, Consolas, monospace);
+  font-size: 10.5px; padding: 1px 4px; border-radius: 3px;
+  background: rgba(255,255,255,0.06); color: #c7d2fe;
+}
 
 /* Transition */
 .modal-enter-active { transition: opacity 0.2s ease; }

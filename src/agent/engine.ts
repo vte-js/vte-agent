@@ -65,9 +65,16 @@ export class AgentEngine {
   private pendingQuestionResolve?: (answer: string) => void;
   private _questionCancelled = false;
   private _questionSkipped = false;
+  private _questionBackRequested = false;
+  /** Set when a multi-step session completes successfully. Blocks immediate re-asking. */
+  private _questionSessionDone = false;
   private _enforceRetryCount = 0;
   private _toolCallCount = 0;
   private static readonly MAX_TOOL_CALLS = 100;
+  /** Consecutive `question` calls — guard against the model asking in a loop. */
+  private _consecutiveQuestionCalls = 0;
+  private _questionLoopGuard = false;
+  private static readonly MAX_CONSECUTIVE_QUESTIONS = 3;
   /** Optional explicit tool whitelist. `null` = no tools, `undefined` = default. */
   private _allowedTools?: string[] | null = undefined;
 
@@ -146,8 +153,11 @@ export class AgentEngine {
     question: string,
     options: Array<{ label: string; description?: string }>,
     multiple: boolean,
-    recommended?: string
+    recommended?: string,
+    stepInfo?: { current: number; total: number; titles: string[] },
+    stepAnswers?: Array<{ step: number; answer: string }>
   ): Promise<string> {
+    console.log(`[VTE-Q] requestQuestion — q="${(question || '').substring(0, 40)}" step=${stepInfo?.current ?? 1}/${stepInfo?.total ?? 1} answers=${(stepAnswers || []).length}`);
     return new Promise((resolve) => {
       this.pendingQuestionResolve = resolve;
       this.onViewUpdate?.({
@@ -157,15 +167,41 @@ export class AgentEngine {
         options,
         multiple,
         recommended,
+        // Multi-step support
+        stepCurrent: stepInfo?.current ?? 1,
+        stepTotal: stepInfo?.total ?? 1,
+        steps: stepInfo?.titles ?? [],
+        stepAnswers: stepAnswers ?? [],
       });
     });
   }
 
-  resolveQuestion(answer: string) {
+  /**
+   * Resolve a pending question with the user's answer.
+   * Supports two calling conventions:
+   *   - Single-arg: resolveQuestion(answer)       — used by VSCode host
+   *   - Two-arg:   resolveQuestion(requestId, answer) — used by web-ide server
+   */
+  resolveQuestion(requestIdOrAnswer?: string, answer?: string | string[]) {
+    console.log(`[VTE-Q] resolveQuestion called — arg1="${(requestIdOrAnswer || '').substring(0, 30)}" arg2=${answer ? JSON.stringify(answer).substring(0, 50) : 'undefined'} pendingResolve=${!!this.pendingQuestionResolve}`);
     if (this.pendingQuestionResolve) {
-      this.pendingQuestionResolve(answer);
+      let resolved: string;
+      // Backward compat: single-arg call means the first arg IS the answer
+      if (answer === undefined) {
+        resolved = requestIdOrAnswer || '';
+      } else {
+        // Two-arg mode: second param is the real answer
+        resolved = Array.isArray(answer) ? (answer[0] ?? '') : (answer || '');
+      }
+      this.pendingQuestionResolve(resolved);
       this.pendingQuestionResolve = undefined;
     }
+  }
+
+  /** Signal the question dialog to go to previous step (session-based multi-step only). */
+  goBack() {
+    this._questionBackRequested = true;
+    this.resolveQuestion('', '__back__');
   }
 
   // ── Reasoning Level ──
@@ -347,6 +383,11 @@ export class AgentEngine {
     // Create abort controller for this request
     this.abortController = new AbortController();
     this._questionCancelled = false;
+    this._questionLoopGuard = false;
+    this._questionBackRequested = false;
+    this._questionSessionDone = false;
+    this._questionSkipped = false; // Also reset skip flag per-chat to avoid stale skips silencing all future questions
+    this._consecutiveQuestionCalls = 0;
     this._enforceRetryCount = 0;
     this._toolCallCount = 0;
     // _questionSkipped persists across turns — only reset by new chat session
@@ -471,6 +512,12 @@ export class AgentEngine {
       if (this._toolCallCount >= AgentEngine.MAX_TOOL_CALLS) {
         console.log(`[VTE] MAX_TOOL_CALLS reached (${this._toolCallCount}), stopping loop`);
         return `达到最大工具调用次数 (${AgentEngine.MAX_TOOL_CALLS})，已停止执行。`;
+      }
+
+      // Guard: model asked too many questions in a row — stop the loop.
+      if (this._questionLoopGuard) {
+        console.log(`[VTE] Question loop guard triggered after ${this._consecutiveQuestionCalls} calls, stopping`);
+        return '已连续多次向用户提问，已停止提问并直接给出结论。如需进一步操作，请基于已有信息执行。';
       }
 
       // LLM-auto mode: no longer force task tracking — let LLM decide
@@ -754,42 +801,187 @@ export class AgentEngine {
 
       // ── Question tool interception ──
       if (tc.function.name === 'question') {
+        console.log(`[VTE-Q] question tool called — skipped=${this._questionSkipped} cancelled=${this._questionCancelled} sessionDone=${this._questionSessionDone} consecutive=${this._consecutiveQuestionCalls}`);
+
         // Block retry after skip (persists across turns) or cancel (within same turn)
         if (this._questionSkipped || this._questionCancelled) {
+          console.log(`[VTE-Q] → BLOCKED (skip/cancel): ${this._questionSkipped ? 'skipped' : 'cancelled'}`);
           this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
           this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: this._questionSkipped ? '用户已跳过所有提问' : '用户已取消，不再提问', elapsed: 0 });
           results.push({ type: 'error', content: '用户已取消提问。请不要重试 question 工具，继续执行其他任务。' });
           continue;
         }
+        // Guard: if a multi-step session just completed, don't start a new question round.
+        if (this._questionSessionDone) {
+          console.log(`[VTE-Q] → BLOCKED (sessionDone): multi-step session already completed`);
+          console.log(`[VTE] Question blocked: multi-step session already completed`);
+          this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+          this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '提问会话已完成', elapsed: 0 });
+          results.push({
+            type: 'text',
+            content: '多步提问会话已经完成，用户已回答了所有问题。请直接基于已有答案继续执行任务，不要再次调用 question 工具。',
+          });
+          continue;
+        }
+        // Guard: stop asking after N consecutive question calls in one turn.
+        this._consecutiveQuestionCalls++;
+        if (this._consecutiveQuestionCalls > AgentEngine.MAX_CONSECUTIVE_QUESTIONS) {
+          this._questionLoopGuard = true;
+          this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+          this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '已停止提问（达到连续提问上限）', elapsed: 0 });
+          results.push({ type: 'text', content: '你已连续多次向用户提问。请停止调用 question 工具，直接基于已有信息回答或执行任务。' });
+          continue;
+        }
         console.log(`[VTE] Question tool: asking user`);
         this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
-        const answer = await this.requestQuestion(
-          args.question as string,
-          (args.options as Array<{ label: string; description?: string }>) || [],
-          (args.multiple as boolean) || false,
-          args.recommended as string | undefined
-        );
-        if (!answer || answer === '__skip__') {
+        this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+
+        // ── Detect mode: single-step vs session-based multi-step ──
+        const rawSteps = args.steps as Array<{
+          stepTitle: string
+          question: string
+          options?: Array<{ label: string; description?: string }>
+          multiple?: boolean
+          recommended?: string
+        }> | undefined;
+
+        let finalAnswer: string;
+        const totalSteps = (rawSteps && rawSteps.length > 1) ? rawSteps.length : 1;
+
+        if (rawSteps && rawSteps.length > 1) {
+          // ════════════════════════════════════════
+          // SESSION-BASED MULTI-STEP
+          // Engine orchestrates all steps server-side.
+          // LLM calls question ONCE; we walk through
+          // each step and return ALL answers together.
+          // ════════════════════════════════════════
+          const stepTitles = rawSteps.map(s => s.stepTitle);
+          const collectedAnswers: Array<{ step: number; title: string; question: string; answer: string }> = [];
+
+          console.log(`[VTE] Multi-step session started: ${totalSteps} steps`);
+
+          // Use while-loop for back-navigation support
+          let i = 0;
+          while (i < totalSteps) {
+            this._questionBackRequested = false;
+            const step = rawSteps[i];
+            const stepNum = i + 1;
+
+            console.log(`[VTE]   → Step ${stepNum}/${totalSteps}: ${step.stepTitle}`);
+
+            const t0 = Date.now();
+            const answer = await this.requestQuestion(
+              step.question,
+              step.options || [],
+              !!step.multiple,
+              step.recommended,
+              { current: stepNum, total: totalSteps, titles: stepTitles },
+              collectedAnswers.map(a => ({ step: a.step, answer: a.answer }))
+            );
+
+            // Handle back navigation
+            const ms = Date.now() - t0;
+            console.log(`[VTE]   ← Step ${stepNum} answered in ${ms}ms: "${(answer || '').substring(0, 50)}"`);
+
+            if (answer === '__back__' && i > 0) {
+              console.log(`[VTE]   ← Back from step ${stepNum} to step ${i}`);
+              // Pop the last collected answer (the step we're going back TO re-answer)
+              if (collectedAnswers.length > 0) {
+                const popped = collectedAnswers.pop();
+                console.log(`[VTE]   ← Popped answer for step ${popped?.step}: "${popped?.answer?.substring(0, 30)}"`);
+              }
+              i--; // go to previous step
+              continue;
+            }
+
+            // Record answer — remove any previous entry for this step first
+            // (handles re-answer after back-navigation without duplicates)
+            const existingIdx = collectedAnswers.findIndex(a => a.step === stepNum);
+            if (existingIdx >= 0) {
+              console.log(`[VTE]   ← Replacing previous answer for step ${stepNum}`);
+              collectedAnswers.splice(existingIdx, 1);
+            }
+
+            collectedAnswers.push({
+              step: stepNum,
+              title: step.stepTitle,
+              question: step.question,
+              answer: answer || '(cancelled)',
+            });
+
+            // User cancelled mid-flow → stop
+            if (!answer) {
+              console.log(`[VTE]   ✗ User cancelled at step ${stepNum}`);
+              this._questionCancelled = true;
+              break;
+            }
+            if (answer === '__skip__') {
+              console.log(`[VTE]   ⊘ User skipped at step ${stepNum}`);
+              this._questionSkipped = true;
+              break;
+            }
+
+            console.log(`[VTE]   ✓ Step ${stepNum} answered: "${answer.substring(0, 50)}"`);
+            i++;
+          }
+
+          // Build consolidated result
+          if (this._questionSkipped) {
+            finalAnswer = '__skip__';
+          } else if (this._questionCancelled) {
+            finalAnswer = '';
+          } else {
+            // Format all answers as structured text for the LLM
+            const answerLines = collectedAnswers.map(a =>
+              `步骤 ${a.step}/${totalSteps} [${a.title}]: "${a.answer}"`
+            );
+            finalAnswer = `多步提问会话已完成（共 ${totalSteps} 步）。用户答案如下：\n${answerLines.join('\n')}\n【重要】请直接基于以上答案继续执行任务，不要再调用 question 工具提问。`;
+            // Mark that a multi-step session just completed — prevents immediate re-asking
+            this._questionSessionDone = true;
+          }
+        } else {
+          // ════════════════════════════════════════
+          // SINGLE STEP (original behavior)
+          // ════════════════════════════════════════
+          finalAnswer = await this.requestQuestion(
+            args.question as string,
+            (args.options as Array<{ label: string; description?: string }>) || [],
+            (args.multiple as boolean) || false,
+            args.recommended as string | undefined
+          );
+        }
+
+        if (!finalAnswer || finalAnswer === '__skip__') {
           this._questionCancelled = true;
         }
-        if (answer === '__skip__') {
+        if (finalAnswer === '__skip__') {
           this._questionSkipped = true;
         }
-        const displayResult = answer === '__skip__'
+
+        // Build display result
+        const displayResult = finalAnswer === '__skip__'
           ? 'User chose to skip all questions'
-          : answer
-            ? `User selected: ${answer}`
-            : 'User cancelled';
+          : !finalAnswer
+            ? 'User cancelled'
+            : finalAnswer.includes('多步提问会话已完成')
+              ? `✅ Multi-step session complete (${totalSteps} steps)`
+              : `User selected: ${finalAnswer}`;
+
         this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: displayResult, elapsed: 0 });
         results.push({
           type: 'text',
-          content: answer === '__skip__'
+          content: finalAnswer === '__skip__'
             ? '用户选择跳过所有问题。请不要再调用 question 工具，直接执行任务。'
-            : answer || 'User chose not to answer. Proceed without this input.',
+            : !finalAnswer
+              ? 'User chose not to answer. Proceed without this input.'
+              : finalAnswer.includes('多步提问会话已完成')
+                ? finalAnswer  // Already contains the full instruction
+                : finalAnswer || 'User chose not to answer.',
         });
         continue;
       }
 
+      this._consecutiveQuestionCalls = 0; // any non-question tool resets the counter
       this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
       const startTime = Date.now();
 
@@ -836,6 +1028,34 @@ export class AgentEngine {
     this.deniedTools.clear();
     this._questionSkipped = false;
     this._questionCancelled = false;
+    this._questionLoopGuard = false;
+    this._questionBackRequested = false;
+    this._questionSessionDone = false;
+    this._consecutiveQuestionCalls = 0;
+  }
+
+  /**
+   * Drop the user message at `userIndex` (0-based among role==='user' messages)
+   * and everything after it. Used when the user edits a past message and wants
+   * to branch the conversation from that point instead of appending to the end.
+   */
+  truncateHistoryAfterUserIndex(userIndex: number): void {
+    if (userIndex < 0) return;
+    let count = -1;
+    let targetIdx = -1;
+    for (let i = 0; i < this.messages.length; i++) {
+      if ((this.messages[i] as any).role === 'user') {
+        count++;
+        if (count === userIndex) {
+          targetIdx = i;
+          break;
+        }
+      }
+    }
+    if (targetIdx >= 0) {
+      this.messages = this.messages.slice(0, targetIdx);
+      console.log(`[VTE] Truncated history after user index ${userIndex} (kept ${this.messages.length} msgs)`);
+    }
   }
 
   setModel(model: string): void {
@@ -847,6 +1067,15 @@ export class AgentEngine {
       this.abortController.abort();
       this.abortController = null;
       console.log('[VTE] Request aborted by user');
+    }
+    // Also resolve any pending question to unblock the multi-step session loop
+    if (this.pendingQuestionResolve) {
+      console.log('[VTE] Aborting pending question — resolving with cancellation');
+      this._questionCancelled = true;
+      this._questionBackRequested = false;
+      const resolve = this.pendingQuestionResolve;
+      this.pendingQuestionResolve = undefined;
+      resolve('');
     }
   }
 

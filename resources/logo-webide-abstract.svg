@@ -1,0 +1,33 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="fg" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#e0d4ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+
+  <!-- outer ring -->
+  <circle cx="50" cy="50" r="45" stroke="url(#rg)" stroke-width="3.5"/>
+
+  <!-- abstract geometric fox — ears + diamond face, code-like minimalism -->
+  <g stroke="url(#fg)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- left ear: angled triangle -->
+    <path d="M34 38L26 22L42 32Z" fill="url(#fg)" fill-opacity=".18"/>
+    <!-- right ear: mirrored -->
+    <path d="M66 38L74 22L58 32Z" fill="url(#fg)" fill-opacity=".18"/>
+    <!-- face: diamond/rhombus shape (abstract fox head, naturally V-shaped like code bracket) -->
+    <path d="M42 32 L50 28 L58 32 L66 48 L50 64 L34 48 Z" fill="url(#fg)" fill-opacity=".12"/>
+    <!-- eyes + nose (minimal dots) -->
+    <circle cx="43" cy="46" r="2.2" fill="url(#fg)"/>
+    <circle cx="57" cy="46" r="2.2" fill="url(#fg)"/>
+    <circle cx="50" cy="54" r="1.5" fill="url(#fg)" fill-opacity=".6"/>
+    <!-- terminal cursor blink below chin — the "code" element organically integrated -->
+    <line x1="47" y1="70" x2="53" y2="70" stroke-width="2" stroke-linecap="round">
+      <animate attributeName="opacity" values="1;0;1" dur="1.8s" repeatCount="indefinite"/>
+    </line>
+  </g>
+</svg>

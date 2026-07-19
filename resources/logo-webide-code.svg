@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <!-- Web-IDE brand mark v2: fox (from resources/icon.svg) fused with < > code brackets, inside the gradient ring -->
+  <defs>
+    <clipPath id="wcClip"><circle cx="50" cy="50" r="38"/></clipPath>
+    <mask id="wcMask">
+      <rect width="100" height="100" fill="white"/>
+      <ellipse cx="38" cy="48" rx="6" ry="5" fill="black" transform="rotate(-8 38 48)"/>
+      <ellipse cx="62" cy="48" rx="6" ry="5" fill="black" transform="rotate(8 62 48)"/>
+      <ellipse cx="50" cy="60" rx="3" ry="2.5" fill="black"/>
+    </mask>
+    <linearGradient id="wcRing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="wcFox" x1="50%" y1="10%" x2="50%" y2="90%">
+      <stop offset="0%" stop-color="#f0eaff"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="wcCode" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <!-- Gradient ring (web-ide exclusive) -->
+  <path fill-rule="evenodd" d="M50 4a46 46 0 1 0 0 92 46 46 0 0 0 0-92Zm0 8a38 38 0 1 1 0 76 38 38 0 0 1 0-76Z" fill="url(#wcRing)"/>
+  <!-- Fox, scaled down to make room for the code brackets -->
+  <g transform="translate(50 50) scale(0.74) translate(-50 -50)">
+    <g clip-path="url(#wcClip)" mask="url(#wcMask)" fill="url(#wcFox)">
+      <path d="M22 10L38 38L16 40Z"/>
+      <path d="M78 10L62 38L84 40Z"/>
+      <path d="M16 40Q16 58 32 66L50 76L68 66Q84 58 84 40L62 38Q50 46 38 38Z"/>
+    </g>
+  </g>
+  <!-- Code brackets < > flanking the fox -->
+  <path d="M20 39 L11 50 L20 61" stroke="url(#wcCode)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M80 39 L89 50 L80 61" stroke="url(#wcCode)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

@@ -31,7 +31,17 @@
       </div>
       <!-- Image attachments -->
       <div v-if="msg.role === 'user' && msg.images?.length" class="msg-images">
-        <img v-for="(img, idx) in msg.images" :key="idx" :src="img.dataUrl" :alt="img.name" class="msg-image" @click="previewImage(img)" />
+        <img
+          v-for="(img, idx) in msg.images"
+          :key="idx"
+          :src="img.dataUrl"
+          :alt="img.name"
+          :title="img.name"
+          class="msg-image"
+          loading="lazy"
+          @click="previewImage(img)"
+          @error="($event.target as HTMLElement).style.display='none'"
+        />
       </div>
       <!-- Error message with special styling -->
       <div v-if="msg.role === 'assistant' && isError" class="mt error-msg">

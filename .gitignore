@@ -7,3 +7,6 @@ out/
 .mimocode/.cron-lock
 uni-agent/
 .workbuddy/
+
+# 本地运行时工作区数据（会话/配置/历史，不提交）
+.vte/

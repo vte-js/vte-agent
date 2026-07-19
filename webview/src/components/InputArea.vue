@@ -1,5 +1,5 @@
 <template>
-  <div class="inp">
+  <div class="inp" :class="{ 'inp-fill': fill }">
     <!-- Outer shell: gray bg, rounded, border, focus highlight -->
     <div class="inp-outer">
       <!-- Top toolbar — uses outer's gray bg -->
@@ -47,15 +47,27 @@
             </button>
           </div>
         </div>
-        <!-- Image preview -->
-        <div v-if="images.length > 0" class="image-preview">
-          <div v-for="(img, idx) in images" :key="idx" class="image-item">
-            <img :src="img.dataUrl" :alt="img.name" />
-            <button class="image-remove" @click="removeImage(idx)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <!-- Image chips — compact, click thumbnail to preview, hover for remove -->
+        <div v-if="images.length > 0" class="image-chips">
+          <div
+            v-for="(img, idx) in images"
+            :key="img.dataUrl"
+            class="image-chip"
+            @click="previewImage(img)"
+            :title="img.name"
+          >
+            <img :src="img.dataUrl" :alt="img.name" class="image-chip-thumb" />
+            <span class="image-chip-name">{{ img.name }}</span>
+            <button class="image-chip-remove" @click.stop="removeImage(idx)" title="移除">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="10" height="10"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
         </div>
+        <ImagePreview
+          :src="previewSrc"
+          :name="previewName"
+          @close="previewSrc = ''"
+        />
         <div v-if="editRef" class="edit-ref">
           <svg class="edit-ref-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           <span class="edit-ref-text">{{ editRef }}</span>
@@ -72,6 +84,9 @@
           @keydown.enter.exact.prevent="onSend"
           @keydown.tab.exact.prevent="onTabAccept"
           @input="onInput"
+          @paste="onPaste"
+          @drop.prevent="onDrop"
+          @dragover.prevent
         ></textarea>
         <div class="inp-tool-bottom">
           <ModelSelector
@@ -141,7 +156,9 @@ import ReasoningPicker from './ReasoningPicker.vue'
 import GitPicker from './GitPicker.vue'
 import SkillsPicker from './SkillsPicker.vue'
 import SlashCommand, { type SlashCommandItem } from './SlashCommand.vue'
+import { BUILTIN_SLASH_COMMANDS } from '../slash-commands'
 import ContextMenu from './ContextMenu.vue'
+import ImagePreview from './ImagePreview.vue'
 import { DEFAULT_CONTEXT_ITEMS } from './context-menu-items'
 
 export interface ImageAttachment {
@@ -161,6 +178,8 @@ const props = defineProps<{
   activeModelIndex: number
   reasoningLevel: ReasoningLevel
   nextStepSuggestion?: string
+  /** When true the input area stretches to fill its parent (resizable shell). */
+  fill?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -179,6 +198,9 @@ const text = ref('')
 const textareaEl = ref<HTMLTextAreaElement>()
 const fileInputEl = ref<HTMLInputElement>()
 const images = ref<ImageAttachment[]>([])
+/** Image preview (click thumbnail to enlarge). */
+const previewSrc = ref('')
+const previewName = ref('')
 const contextFiles = ref<ContextAttachment[]>([])
 const showCtxMenu = ref(false)
 const showSlashCmd = ref(false)
@@ -272,7 +294,7 @@ function triggerImageUpload() {
 }
 
 function onInput() {
-  autoResize()
+  if (!props.fill) autoResize()
   // Detect triggers
   const val = text.value
   if (val === '/') {
@@ -294,17 +316,7 @@ function onInput() {
 }
 
 function loadSlashCommands() {
-  slashCommands.value = [
-    { name: 'code-review', description: '审查代码质量、Bug、安全和性能问题', category: 'Skills', icon: 'search', color: 'rgba(34,197,94,0.15)', iconColor: '#22c55e', action: 'skill:code-review' },
-    { name: 'unit-test', description: '为代码生成单元测试用例', category: 'Skills', icon: 'test', color: 'rgba(59,130,246,0.15)', iconColor: '#3b82f6', action: 'skill:unit-test' },
-    { name: 'refactor', description: '重构代码提高可维护性', category: 'Skills', icon: 'code', color: 'rgba(168,85,247,0.15)', iconColor: '#a855f7', action: 'skill:refactor' },
-    { name: 'debug', description: '系统化调试和问题定位', category: 'Skills', icon: 'bug', color: 'rgba(239,68,68,0.15)', iconColor: '#ef4444', action: 'skill:debug' },
-    { name: 'api-design', description: '设计 RESTful API 接口', category: 'Skills', icon: 'zap', color: 'rgba(245,158,11,0.15)', iconColor: '#f59e0b', action: 'skill:api-design' },
-    { name: 'security-audit', description: '安全审计和漏洞检测', category: 'Skills', icon: 'shield', color: 'rgba(239,68,68,0.15)', iconColor: '#ef4444', action: 'skill:security-audit' },
-    { name: 'database-design', description: '数据库 Schema 设计和优化', category: 'Skills', icon: 'database', color: 'rgba(20,184,166,0.15)', iconColor: '#14b8a6', action: 'skill:database-design' },
-    { name: 'performance', description: '性能分析和优化', category: 'Skills', icon: 'zap', color: 'rgba(245,158,11,0.15)', iconColor: '#f59e0b', action: 'skill:performance' },
-    { name: 'git-workflow', description: 'Git 工作流最佳实践', category: 'Skills', icon: 'git', color: 'rgba(99,102,241,0.15)', iconColor: '#818cf8', action: 'skill:git-workflow' },
-  ]
+  slashCommands.value = BUILTIN_SLASH_COMMANDS
 }
 
 function onSlashSelect(cmd: SlashCommandItem) {
@@ -382,6 +394,65 @@ function onFileSelect(event: Event) {
 
 function removeImage(index: number) {
   images.value.splice(index, 1)
+}
+
+/** Add a File (image/*) to the attachment list, enforcing the 10MB cap. */
+function pushImageFile(file: File) {
+  if (!file.type.startsWith('image/')) return
+  if (file.size > 10 * 1024 * 1024) {
+    alert('图片大小不能超过 10MB')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const dataUrl = e.target?.result as string
+    images.value.push({
+      name: file.name,
+      dataUrl,
+      mimeType: file.type,
+    })
+  }
+  reader.readAsDataURL(file)
+}
+
+/** Paste from clipboard — intercept image files, ignore text. */
+function onPaste(event: ClipboardEvent) {
+  const items = event.clipboardData?.items
+  if (!items) return
+  let hasImage = false
+  for (const item of Array.from(items)) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile()
+      if (file) {
+        // Pasting an image usually has no sensible filename — derive one.
+        if (!file.name || file.name === 'image.png') {
+          const ext = (file.type.split('/')[1] || 'png').split(';')[0]
+          const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, '')
+          file.name = `pasted-${stamp}.${ext}`
+        }
+        pushImageFile(file)
+        hasImage = true
+      }
+    }
+  }
+  // If the paste contained any image, prevent the default text insertion
+  // (otherwise the file name shows up as garbage in the textarea).
+  if (hasImage) event.preventDefault()
+}
+
+/** Drag-and-drop image files into the textarea. */
+function onDrop(event: DragEvent) {
+  const files = event.dataTransfer?.files
+  if (!files) return
+  for (const file of Array.from(files)) {
+    pushImageFile(file)
+  }
+}
+
+/** Open the full-size preview overlay for a chip thumbnail. */
+function previewImage(img: ImageAttachment) {
+  previewSrc.value = img.dataUrl
+  previewName.value = img.name
 }
 
 function removeContext(index: number) {

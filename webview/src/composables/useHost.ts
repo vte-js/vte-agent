@@ -50,6 +50,12 @@ function createVsCodeTransport(): HostTransport {
 function createWebSocketTransport(url: string): HostTransport {
   const ws = new WebSocket(url)
   const handlers: Array<(msg: any) => void> = []
+  const outbox: string[] = []
+
+  ws.onopen = () => {
+    for (const raw of outbox) ws.send(raw)
+    outbox.length = 0
+  }
 
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data)
@@ -57,9 +63,23 @@ function createWebSocketTransport(url: string): HostTransport {
   }
 
   return {
-    postMessage: (msg) => ws.send(JSON.stringify(msg)),
+    postMessage: (msg) => {
+      const raw = JSON.stringify(msg)
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(raw)
+      } else {
+        outbox.push(raw)
+      }
+    },
     onMessage: (handler) => handlers.push(handler),
-    signalReady: () => ws.send(JSON.stringify({ type: 'ready' })),
+    signalReady: () => {
+      const raw = JSON.stringify({ type: 'ready' })
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(raw)
+      } else {
+        outbox.push(raw)
+      }
+    },
   }
 }
 

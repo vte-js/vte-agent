@@ -432,15 +432,25 @@ export class AgentPool {
         flushNow()
       }
 
-      // Auto-answer question requests
+      // Auto-answer question requests (safety net only — 30s fallback for hung agents).
+      // The question tool requires human input; this is a last-resort unblocker
+      // so background work-order agents don't hang forever on unanswered questions.
+      // NOTE: 500ms was too aggressive — it raced with real user input. 30s ensures
+      // the user has ample time to respond; if they haven't, the agent can continue.
       if (update.type === 'question_request' && !questionAutoAnswered) {
         questionAutoAnswered = true
         const options = update.options as Array<{ label: string; description?: string }> | undefined
         const autoAnswer = options && options.length > 0 ? options[0].label : order.description || '继续执行'
-        console.log(`[VTE] Agent ${agentId} auto-answering question: ${autoAnswer}`)
+        console.log(`[VTE] Agent ${agentId} scheduling question auto-answer in 30s fallback: ${autoAnswer}`)
         setTimeout(() => {
-          agent.engine.resolveQuestion(autoAnswer)
-        }, 500)
+          // Only auto-answer if question is still pending (not already resolved by user or abort)
+          if ((agent.engine as any).pendingQuestionResolve) {
+            console.log(`[VTE] Agent ${agentId} fallback auto-answering question: ${autoAnswer}`)
+            agent.engine.resolveQuestion(autoAnswer)
+          } else {
+            console.log(`[VTE] Agent ${agentId} skipping auto-answer — question already resolved`)
+          }
+        }, 30000) // 30s safety net (was 500ms — too fast, raced with user input)
       }
 
       // Auto-approve permission requests.

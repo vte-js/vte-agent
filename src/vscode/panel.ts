@@ -99,10 +99,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }> = [];
 
 
-  constructor(private readonly extensionUri: vscode.Uri) {
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    /** Extension-scoped memento for host-agnostic config (NOT in package.json
+     *  schema → never shown in the VSCode Settings UI). Used for
+     *  `forceMultiAgent` / `subAgentTimeout` because writing to
+     *  `vscode.workspace.getConfiguration().update()` for unknown keys is
+     *  silently dropped by VSCode, and we'd rather keep these private than
+     *  expose them in the native settings UI. */
+    private readonly globalState: vscode.Memento,
+  ) {
     outputChannel = vscode.window.createOutputChannel('VTE Agent');
+    // Restore host-agnostic config from globalState (falls back to defaults
+    // on first run). These values are NOT read from settings.json anymore.
+    this.subAgentTimeout = this.globalState.get<number>('vte.subAgentTimeout', 300)
+    this.forceMultiAgent = this.globalState.get<boolean>('vte.forceMultiAgent', false)
   }
-
 
 
   /** Post message to all active webviews */
@@ -1171,15 +1183,19 @@ Example usage here
     // the sub-agents in parallel, then synthesize their results back into
     // THIS main chat — instead of answering directly.
     //
-    // Set vteCode.forceMultiAgent=true in settings to bypass the router and
-    // delegate every message (useful for testing / debugging).
-    const forceDelegation = this.forceMultiAgent;
-    if (forceDelegation || await this.shouldDelegate(text)) {
-      if (!forceDelegation) {
-        log(`[VTE] Auto-delegating request to multi-agent system`);
-      } else {
-        log(`[VTE] Force-delegating request to multi-agent system (forceMultiAgent=on)`);
-      }
+    // Set vteCode.forceMultiAgent=true in settings to force-delegate every
+    // message (useful for testing / debugging the multi-agent flow).
+    //
+    // forceMultiAgent is the master switch for multi-agent delegation:
+    //   false (default) → every message goes through normal single-agent chat.
+    //                     The legacy LLM-router (shouldDelegate) is no longer
+    //                     consulted — its auto-routing was too aggressive and
+    //                     surprising to users (router LLM would say YES for
+    //                     most prompts).
+    //   true            → every message is force-delegated, bypassing any
+    //                     routing decision.
+    if (this.forceMultiAgent) {
+      log(`[VTE] Force-delegating request to multi-agent system (forceMultiAgent=on)`);
       await this.delegateToMultiAgent(text, model);
       return;
     }
@@ -1413,11 +1429,14 @@ Example usage here
     // shows in the VSCode Settings UI — other hosts persist it elsewhere.
     if (typeof subAgentTimeout === 'number') {
       this.subAgentTimeout = subAgentTimeout;
-      await config.update('subAgentTimeout', subAgentTimeout, vscode.ConfigurationTarget.Global);
+      // globalState.update() is reliable (no schema requirement), unlike
+      // vscode.workspace.getConfiguration().update() which silently drops
+      // writes for keys not declared in package.json.
+      await this.globalState.update('vte.subAgentTimeout', subAgentTimeout);
     }
     if (typeof forceMultiAgent === 'boolean') {
       this.forceMultiAgent = forceMultiAgent;
-      await config.update('forceMultiAgent', forceMultiAgent, vscode.ConfigurationTarget.Global);
+      await this.globalState.update('vte.forceMultiAgent', forceMultiAgent);
     }
 
     this.engine = undefined;
@@ -1730,10 +1749,11 @@ Example usage here
     const config = vscode.workspace.getConfiguration('vteCode');
     const models = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
     const activeModelIndex = config.get<number>('activeModelIndex', 0);
-    // Host-agnostic config: read from our own config bucket (NOT a native
-    // settings schema entry, so it never appears in the VSCode Settings UI).
-    this.subAgentTimeout = config.get<number>('subAgentTimeout', 300);
-    this.forceMultiAgent = config.get<boolean>('forceMultiAgent', false);
+    // Host-agnostic config: read from globalState (private to this extension,
+    // not in the VSCode Settings UI). The values were written by saveModels
+    // via this.globalState.update().
+    this.subAgentTimeout = this.globalState.get<number>('vte.subAgentTimeout', 300);
+    this.forceMultiAgent = this.globalState.get<boolean>('vte.forceMultiAgent', false);
 
     this.postMessage({
       type: 'configData',

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <!-- Web-IDE exclusive brand mark: fox (from resources/icon.svg) inside a gradient ring -->
+  <defs>
+    <clipPath id="wfoxClip"><circle cx="50" cy="50" r="38"/></clipPath>
+    <mask id="wfoxMask">
+      <rect width="100" height="100" fill="white"/>
+      <ellipse cx="38" cy="48" rx="6" ry="5" fill="black" transform="rotate(-8 38 48)"/>
+      <ellipse cx="62" cy="48" rx="6" ry="5" fill="black" transform="rotate(8 62 48)"/>
+      <ellipse cx="50" cy="60" rx="3" ry="2.5" fill="black"/>
+    </mask>
+    <linearGradient id="wring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="wfox" x1="50%" y1="10%" x2="50%" y2="90%">
+      <stop offset="0%" stop-color="#f0eaff"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+  </defs>
+  <!-- Gradient ring (web-ide exclusive) -->
+  <path fill-rule="evenodd" d="M50 4a46 46 0 1 0 0 92 46 46 0 0 0 0-92Zm0 8a38 38 0 1 1 0 76 38 38 0 0 1 0-76Z" fill="url(#wring)"/>
+  <!-- Fox (matches resources/icon.svg / AgentAvatar compact) -->
+  <g clip-path="url(#wfoxClip)" mask="url(#wfoxMask)" fill="url(#wfox)">
+    <path d="M22 10L38 38L16 40Z"/>
+    <path d="M78 10L62 38L84 40Z"/>
+    <path d="M16 40Q16 58 32 66L50 76L68 66Q84 58 84 40L62 38Q50 46 38 38Z"/>
+  </g>
+</svg>

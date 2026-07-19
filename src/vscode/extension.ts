@@ -20,7 +20,7 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine('VTE Agent LSP service initialized.');
   }
 
-  const provider = new ChatViewProvider(context.extensionUri);
+  const provider = new ChatViewProvider(context.extensionUri, context.globalState);
 
   // Sidebar view provider (Activity Bar)
   const registration = vscode.window.registerWebviewViewProvider(
