@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, reactive, defineAsyncComponent } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, reactive, defineAsyncComponent } from 'vue'
 import { useVsCode } from '@webview/composables/useVsCode'
 import { useChat } from '@webview/composables/useChat'
 import { useMode } from '@webview/composables/useMode'
