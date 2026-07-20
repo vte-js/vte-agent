@@ -14,6 +14,8 @@ const { send, onMessage } = useVsCode()
 
 const props = defineProps<{
   root: string
+  /** VTE Stage: per-path touch info (op + ts), keyed by absolute path. */
+  touched?: Record<string, { op: string; ts: number }>
 }>()
 
 const emit = defineEmits<{
@@ -186,6 +188,39 @@ watch(
 const rootItems = () => childrenMap.value.get(props.root) || []
 
 function getChildren(dirPath: string) { return childrenMap.value.get(dirPath) || [] }
+
+// ── VTE Stage: auto-reveal touched files in the (lazy) tree ──
+function parentDir(p: string): string {
+  const i = p.lastIndexOf('/')
+  return i > 0 ? p.slice(0, i) : p
+}
+// When a file is touched, expand + load its ancestor dirs so the
+// highlight is actually visible (the tree loads directories on demand).
+function ensureVisible(filePath: string): void {
+  let dir = parentDir(filePath)
+  const root = props.root
+  const seen = new Set<string>()
+  while (dir.startsWith(root) && !seen.has(dir)) {
+    seen.add(dir)
+    if (!expanded.value.has(dir)) {
+      const exp = new Set(expanded.value)
+      exp.add(dir)
+      expanded.value = exp
+    }
+    if (!childrenMap.value.has(dir)) loadDir(dir)
+    const parent = parentDir(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+}
+watch(
+  () => props.touched,
+  (map) => {
+    if (!map) return
+    for (const p of Object.keys(map)) ensureVisible(p)
+  },
+  { deep: true },
+)
 </script>
 
 <template>
@@ -202,21 +237,22 @@ function getChildren(dirPath: string) { return childrenMap.value.get(dirPath) ||
     <!-- ═══ TREE LIST (recursive via TreeNode) ═══ -->
     <div v-else class="tree-list">
       <!-- Root-level items rendered by TreeNode -->
-      <TreeNode
-        v-for="item in rootItems()"
-        :key="item.path"
-        :item="item"
-        :depth="0"
-        :expanded="expanded"
-        :loading="loading"
-        :selected-path="selectedPath"
-        :get-children="getChildren"
-        :rename-input="renameInput"
-        :create-input="createInput"
-        @toggle="toggleDir"
-        @select="selectFile"
-        @contextmenu="onNodeContextmenu"
-      />
+        <TreeNode
+          v-for="item in rootItems()"
+          :key="item.path"
+          :item="item"
+          :depth="0"
+          :expanded="expanded"
+          :loading="loading"
+          :selected-path="selectedPath"
+          :get-children="getChildren"
+          :rename-input="renameInput"
+          :create-input="createInput"
+          :touched="touched"
+          @toggle="toggleDir"
+          @select="selectFile"
+          @contextmenu="onNodeContextmenu"
+        />
 
       <!-- Create row for ROOT -->
       <div v-if="createInput && createInput.parentPath === root" class="tree-item file editing" @click.stop @contextmenu.prevent>
@@ -359,4 +395,35 @@ function getChildren(dirPath: string) { return childrenMap.value.get(dirPath) ||
 }
 .fc-btn.ok { background: var(--vte-danger, #e5484d); border-color: var(--vte-danger, #e5484d); color: #fff; }
 .fc-btn.cancel:hover { background: var(--vte-list-hover, #2a2d2e); }
+
+/* ═══ VTE Stage — file touched highlight (driven by stage:file_touch) ═══ */
+:deep(.tree-item.touched) { position: relative; }
+:deep(.tree-item.touched-read) {
+  background: var(--vte-stage-read-bg);
+}
+:deep(.tree-item.touched-read) .tree-label {
+  color: var(--vte-stage-read);
+}
+:deep(.tree-item.touched-write) {
+  background: var(--vte-stage-write-bg);
+  box-shadow: inset 2px 0 0 var(--vte-stage-write);
+  animation: stage-pulse 1.6s ease-in-out infinite;
+}
+:deep(.tree-item.touched-edit) {
+  background: var(--vte-stage-edit-bg);
+  box-shadow: inset 2px 0 0 var(--vte-stage-edit);
+  animation: stage-pulse-edit 1.6s ease-in-out infinite;
+}
+:deep(.tree-item.touched-delete) {
+  background: var(--vte-stage-delete-bg);
+  box-shadow: inset 2px 0 0 var(--vte-stage-delete);
+}
+@keyframes stage-pulse {
+  0%, 100% { background: var(--vte-stage-write-bg); }
+  50% { background: rgba(99, 102, 241, 0.28); }
+}
+@keyframes stage-pulse-edit {
+  0%, 100% { background: var(--vte-stage-edit-bg); }
+  50% { background: rgba(245, 158, 11, 0.26); }
+}
 </style>

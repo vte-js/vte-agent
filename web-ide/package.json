@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
+    "monaco-editor": "^0.55.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

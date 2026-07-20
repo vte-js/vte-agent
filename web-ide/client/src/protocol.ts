@@ -15,6 +15,25 @@ export type ViewUpdate =
   | { type: 'permission_request'; requestId: string; toolName: string; toolArgs: Record<string, unknown>; category: string }
   | { type: 'question_request'; requestId: string; question: string; options: Array<{ label: string; description?: string }>; multiple: boolean; recommended?: string }
 
+// ── VTE Stage semantic events (derived on the server, not the core) ──
+// A file was touched (read / write / edit / delete) by an agent.
+export interface StageFileTouch {
+  type: 'stage:file_touch'
+  ts: number
+  agentId: string
+  path: string
+  op: 'read' | 'write' | 'edit' | 'delete'
+}
+// A write/edit completed — carries before/after content for a Monaco diff.
+export interface StageFileWriteDone {
+  type: 'stage:file_write_done'
+  ts: number
+  agentId: string
+  path: string
+  before: string
+  after: string
+}
+
 // Top-level server -> client
 export type ServerMessage =
   | { type: 'update'; update: ViewUpdate }
@@ -23,6 +42,8 @@ export type ServerMessage =
   | { type: 'toast'; level: 'info' | 'success' | 'warning' | 'error'; text: string }
   | { type: 'configData'; workspace?: string; models: Array<{ name: string; apiKey: string; apiBase: string; model: string }>; subAgentTimeout?: number; forceMultiAgent?: boolean }
   | { type: 'cleared' }
+  | StageFileTouch
+  | StageFileWriteDone
 
 // Client -> server
 export type ClientMessage =

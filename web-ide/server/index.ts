@@ -65,6 +65,14 @@ let sessionManager: SessionManager
 // The session the live chat is currently bound to.
 let currentSessionId: string | null = null
 
+// ── VTE Stage: pending write tracking (captures "before" at tool_call,
+// emits "after" at tool_result so the client can render a before→after diff) ──
+const pendingWrites = new Map<string, { path: string; before: string }>()
+function resolveWsPath(p: string): string {
+  if (!p) return ''
+  return path.resolve(currentWorkspace, p)
+}
+
 // Global workspace registry (~/.vte-web-ide/workspaces.json)
 const workspaceManager = new WorkspaceManager()
 
@@ -227,8 +235,51 @@ function emitUpdate(update: any): void {
       stepAnswers: (update as any).stepAnswers ?? [],
     })
   }
+  // ── VTE Stage: derive file-touch events from tool calls ──
+  if (update.type === 'tool_call') deriveStageFileTouch(update)
+  else if (update.type === 'tool_result') flushStageFileWrite(update)
+
   // Forward the RAW update (useChat/useMultiAgent consume top-level types).
   post(update)
+}
+
+// ── VTE Stage: file-touch derivation (host-layer only, never the core) ──
+function deriveStageFileTouch(u: any): void {
+  const name = u.name as string
+  const args = (u.arguments as Record<string, unknown>) || {}
+  if (name === 'read') {
+    const p = resolveWsPath(String(args.path || ''))
+    if (p) post({ type: 'stage:file_touch', ts: Date.now(), agentId: 'main', path: p, op: 'read' })
+    return
+  }
+  if (name === 'write' || name === 'edit') {
+    const p = resolveWsPath(String(args.path || ''))
+    if (!p) return
+    // Read the CURRENT file content now (before the tool executes) so we
+    // have a real "before" to diff against once the write lands.
+    let before = ''
+    try { before = fs.readFileSync(p, 'utf-8') } catch { /* new file: nothing to diff against */ }
+    pendingWrites.set(u.toolCallId, { path: p, before })
+    post({ type: 'stage:file_touch', ts: Date.now(), agentId: 'main', path: p, op: name === 'write' ? 'write' : 'edit' })
+  }
+  // 'list' and other tools do not touch a single highlightable file.
+}
+
+function flushStageFileWrite(u: any): void {
+  const pending = pendingWrites.get(u.toolCallId)
+  if (!pending) return
+  pendingWrites.delete(u.toolCallId)
+  // The file has now been written — read it back as the "after".
+  let after = ''
+  try { after = fs.readFileSync(pending.path, 'utf-8') } catch { /* removed right after write */ }
+  post({
+    type: 'stage:file_write_done',
+    ts: Date.now(),
+    agentId: 'main',
+    path: pending.path,
+    before: pending.before,
+    after,
+  })
 }
 
 /** Stream a canned reply so the full UI path (thinking→stream→response)

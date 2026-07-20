@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, reactive, defineAsyncComponent } from 'vue'
 import { useVsCode } from '@webview/composables/useVsCode'
 import { useChat } from '@webview/composables/useChat'
 import { useMode } from '@webview/composables/useMode'
@@ -39,6 +39,9 @@ import VTooltip from '@webview/components/VTooltip.vue'
 import ProjectTree from './components/ProjectTree.vue'
 import GitStatus from './components/GitStatus.vue'
 import WorkspaceSwitcher from './components/WorkspaceSwitcher.vue'
+// VTE Stage — Monaco diff dock is lazy-loaded so its chunk + worker
+// only ship to the browser on the first agent write.
+const MonacoDiffDock = defineAsyncComponent(() => import('./components/MonacoDiffDock.vue'))
 
 // ── Composables (all self-contained, talk to host via useHost → WS) ──
 const mode = useMode()
@@ -58,6 +61,10 @@ const tokenPanelOpen = ref(false)
 const editRef = ref('')
 const editContext = ref<any[]>([])
 const editingMessageId = ref<number | null>(null)
+
+// ── VTE Stage: file-touch highlight map + active Monaco diff ──
+const touchedMap = reactive<Record<string, { op: string; ts: number }>>({})
+const activeDiff = ref<{ path: string; before: string; after: string; agentId: string } | null>(null)
 
 // Permission dialog
 const showAuthDialog = ref(false)
@@ -315,6 +322,11 @@ onMounted(() => {
       } else {
         notify('error', `保存失败: ${msg.error}`)
       }
+    } else if (msg.type === 'stage:file_touch') {
+      touchedMap[msg.path] = { op: msg.op, ts: Date.now() }
+    } else if (msg.type === 'stage:file_write_done') {
+      touchedMap[msg.path] = { op: 'write', ts: Date.now() }
+      activeDiff.value = { path: msg.path, before: msg.before, after: msg.after, agentId: msg.agentId }
     }
   })
   window.addEventListener('keydown', onEscKey)
@@ -408,7 +420,10 @@ function onClosePreview() {
   previewMode.value = 'source'
 }
 function onEscKey(e: KeyboardEvent) {
-  if (e.key === 'Escape' && previewVisible.value) {
+  if (e.key === 'Escape' && activeDiff.value) {
+    activeDiff.value = null
+    e.preventDefault()
+  } else if (e.key === 'Escape' && previewVisible.value) {
     onClosePreview()
     e.preventDefault()
   }
@@ -587,7 +602,7 @@ function onNewSession() {
             <svg class="proj-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-3H5a2 2 0 0 0-2 3z"/></svg>
             <span>文件</span>
           </div>
-          <ProjectTree v-if="workspace" :root="workspace" @select="onSelectFile" />
+          <ProjectTree v-if="workspace" :root="workspace" :touched="touchedMap" @select="onSelectFile" />
         </div>
         <GitStatus />
       </div>
@@ -630,6 +645,12 @@ function onNewSession() {
           @send-message="(text: string) => multiAgent.sendAgentMessage(multiAgent.activeAgentId.value!, text)"
         />
         <ActiveAgents v-if="delegationActive" :agents="multiAgent.agents.value" :request="delegationRequest" />
+        <MonacoDiffDock
+          v-if="activeDiff"
+          :diff="activeDiff"
+          :visible="true"
+          @close="activeDiff = null"
+        />
         <div class="chat-input-zone" :style="{ height: inputHeight + 'px' }" @mousedown="startInputDrag($event)">
           <InputArea
             :fill="true"

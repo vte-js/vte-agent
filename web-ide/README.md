@@ -66,8 +66,10 @@ web-ide/
 
 ```bash
 cd web-ide
-/Users/yunlailuo/.workbuddy/binaries/node/versions/22.22.2/bin/npm install
+npm install
 ```
+
+> 需 Node.js 22+（本项目使用 WorkBuddy 受管运行时，位于 `$HOME/.workbuddy/binaries/node/versions/22.22.2`）。`npm` 请确保在 PATH 中，或用该受管 node 自带的 npm。
 
 依赖（ws / tsx / vite / vue / concurrently）会装到 `web-ide/node_modules`，不污染系统环境。
 

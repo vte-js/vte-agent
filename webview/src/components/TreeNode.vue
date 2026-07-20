@@ -17,6 +17,8 @@ const props = defineProps<{
   getChildren: (dirPath: string) => TreeItem[]
   renameInput: { path: string; current: string } | null
   createInput: { parentPath: string; kind: 'file' | 'folder' } | null
+  /** VTE Stage: per-path touch info (op + timestamp). Keyed by absolute path. */
+  touched?: Record<string, { op: string; ts: number }>
 }>()
 
 const emit = defineEmits<{
@@ -24,6 +26,13 @@ const emit = defineEmits<{
   (e: 'select', item: TreeItem): void
   (e: 'contextmenu', ev: MouseEvent, item: TreeItem, kind: string): void
 }>()
+
+// Stage highlight: match this node's path against the touched map.
+const touchClass = computed(() => {
+  const t = props.touched?.[props.item.path]
+  if (!t) return {}
+  return { touched: true, [`touched-${t.op}`]: true }
+})
 
 const FILE_COLORS: Record<string, string> = {
   ts: '#3178c6', tsx: '#3178c6', js: '#f7df1e', jsx: '#f7df1e',
@@ -54,7 +63,7 @@ const hasCreateInput = computed(() => props.createInput?.parentPath === props.it
   <template v-if="isDir">
     <div
       class="tree-item dir"
-      :class="{ nested: isNested, selected: selectedPath === item.path }"
+      :class="[{ nested: isNested, selected: selectedPath === item.path }, touchClass]"
       @click.stop="emit('toggle', item)"
       @contextmenu.prevent.stop="emit('contextmenu', $event, item, 'dir')"
     >
@@ -82,6 +91,7 @@ const hasCreateInput = computed(() => props.createInput?.parentPath === props.it
           :get-children="getChildren"
           :rename-input="renameInput"
           :create-input="createInput"
+          :touched="touched"
           @toggle="(it) => emit('toggle', it)"
           @select="(it) => emit('select', it)"
           @contextmenu="(ev, it, k) => emit('contextmenu', ev, it, k)"
@@ -124,7 +134,7 @@ const hasCreateInput = computed(() => props.createInput?.parentPath === props.it
   <template v-else>
     <div
       class="tree-item file"
-      :class="{ nested: isNested, selected: selectedPath === item.path }"
+      :class="[{ nested: isNested, selected: selectedPath === item.path }, touchClass]"
       @click.stop="emit('select', item)"
       @contextmenu.prevent.stop="emit('contextmenu', $event, item, 'file')"
     >

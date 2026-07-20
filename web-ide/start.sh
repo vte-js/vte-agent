@@ -10,7 +10,16 @@
 set -e
 cd "$(dirname "$0")"
 
-NODE=/Users/yunlailuo/.workbuddy/binaries/node/versions/22.22.2/bin/node
+# 定位受管 node 运行时：避免写死用户名路径（脚本在不同机器/用户间可移植）。
+# 优先使用 $HOME 下的受管 22.22.2；缺失时回退到 PATH 里的 node。
+NODE="$HOME/.workbuddy/binaries/node/versions/22.22.2/bin/node"
+if [ ! -x "$NODE" ]; then
+  NODE="$(command -v node || true)"
+fi
+if [ -z "$NODE" ]; then
+  echo "✗ 找不到可用的 node 运行时，请先安装 Node.js" >&2
+  exit 1
+fi
 PORT="${VTE_PORT:-3001}"
 
 # 加载 .env 文件（若存在）。.env 里每行 KEY=VALUE 会自动变成环境变量，

@@ -19,6 +19,15 @@
   --vte-input-border: var(--vscode-input-border, #3c3c3c);
   --vte-success: var(--vscode-terminal-ansiGreen, #4ec9b0);
   --vte-error: var(--vscode-errorForeground, #f48771);
+  /* VTE Stage — file-touch highlight tokens (driven by stage:file_touch) */
+  --vte-stage-read: #4ea1ff;
+  --vte-stage-write: var(--vte-primary, #6366f1);
+  --vte-stage-edit: #f59e0b;
+  --vte-stage-delete: var(--vte-error, #f48771);
+  --vte-stage-read-bg: rgba(78, 161, 255, 0.10);
+  --vte-stage-write-bg: var(--vte-primary-muted, rgba(99, 102, 241, 0.16));
+  --vte-stage-edit-bg: rgba(245, 158, 11, 0.14);
+  --vte-stage-delete-bg: rgba(244, 135, 113, 0.12);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
