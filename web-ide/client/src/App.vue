@@ -66,21 +66,24 @@ const editingMessageId = ref<number | null>(null)
 const touchedMap = reactive<Record<string, { op: string; ts: number }>>({})
 const activeDiff = ref<{ path: string; before: string; after: string; agentId: string } | null>(null)
 const modifyingSet = ref<Set<string>>(new Set())
+// path → timestamp when it entered "modifying" (for minimum-visible-duration).
+const modifyingSince: Record<string, number> = {}
 
-// Auto-clear: highlights and diff fade out after inactivity.
-const STAGE_FADE_MS = 8000 // 8s of no new touches → clear everything
+// Auto-clear: highlights and diff fade out after the turn ends (idle window).
+// This is a VIEWING window: after the LLM's final answer, the diff/highlight
+// stay this long so the user can actually read them, then clear automatically.
+const STAGE_FADE_MS = 12000 // 12s viewing window after turn completes
 let fadeTimer: ReturnType<typeof setTimeout> | null = null
-function resetFadeTimer() {
+function resetFadeTimer(ms: number = STAGE_FADE_MS) {
   if (fadeTimer) clearTimeout(fadeTimer)
-  fadeTimer = setTimeout(clearStageEffects, STAGE_FADE_MS)
+  fadeTimer = setTimeout(clearAllStageEffects, ms)
 }
-function clearStageEffects() {
-  // Keep only entries newer than FADE_MS (guard against race).
-  const cutoff = Date.now() - STAGE_FADE_MS - 500
-  for (const [k, v] of Object.entries(touchedMap)) {
-    if (v.ts < cutoff) delete touchedMap[k]
-  }
-  if (Object.keys(touchedMap).length === 0) activeDiff.value = null
+/** Hard clear — wipe every stage effect. Used by the idle timer and onSend. */
+function clearAllStageEffects() {
+  if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null }
+  Object.keys(touchedMap).forEach((k) => delete touchedMap[k])
+  modifyingSet.value = new Set()
+  activeDiff.value = null
 }
 
 // Permission dialog
@@ -349,20 +352,40 @@ onMounted(() => {
       resetFadeTimer()
     } else if (msg.type === 'stage:file_modifying') {
       modifyingSet.value = new Set([...modifyingSet.value, msg.path])
+      modifyingSince[msg.path] = Date.now()
       resetFadeTimer()
     } else if (msg.type === 'stage:file_write_done') {
-      // Remove from "modifying" set (write completed), then set highlight + diff.
+      // Write completed. Transition "修改中" spinner → highlight + diff. But keep
+      // the breathing spinner visible for a MINIMUM duration so fast (<100ms)
+      // writes don't flash imperceptibly — this is the "呼吸闪烁标识" the user
+      // expects to actually see.
       console.log(`[VTE-Stage] file_write_done: path=${msg.path}, before=${(msg.before||'').length} chars, after=${(msg.after||'').length} chars`)
-      const next = new Set(modifyingSet.value)
-      next.delete(msg.path)
-      modifyingSet.value = next
-      touchedMap[msg.path] = { op: 'write', ts: Date.now() }
-      activeDiff.value = { path: msg.path, before: msg.before || '', after: msg.after || '', agentId: msg.agentId }
-      resetFadeTimer()
+      const path = msg.path
+      const before = msg.before || ''
+      const after = msg.after || ''
+      const agentId = msg.agentId
+      const elapsed = Date.now() - (modifyingSince[path] || Date.now())
+      const MIN_MODIFYING_MS = 800
+      const commit = () => {
+        const next = new Set(modifyingSet.value)
+        next.delete(path)
+        modifyingSet.value = next
+        delete modifyingSince[path]
+        touchedMap[path] = { op: 'write', ts: Date.now() }
+        activeDiff.value = { path, before, after, agentId }
+        resetFadeTimer()
+      }
+      if (elapsed < MIN_MODIFYING_MS) setTimeout(commit, MIN_MODIFYING_MS - elapsed)
+      else commit()
     } else if (msg.type === 'response' || msg.type === 'error') {
-      // LLM turn is done — clear file-tree highlights and diff popup immediately.
-      // The 8s fade timer is a safety net; this is the explicit "turn complete" signal.
-      clearStageEffects()
+      // LLM turn is done. DON'T clear instantly — that would unmount the diff
+      // dock in the same frame it received setModel, so it never paints (and the
+      // abrupt unmount crashed Monaco with "TextModel got disposed"). Instead
+      // start the viewing-window timer: effects linger STAGE_FADE_MS so the user
+      // can read the diff, then clear automatically. Since no more stage events
+      // follow the final answer, this timer now reliably fires (previously it was
+      // perpetually reset by mid-turn tool events → "一直在" never clearing).
+      resetFadeTimer()
     }
   })
   window.addEventListener('keydown', onEscKey)
@@ -375,9 +398,7 @@ onUnmounted(() => {
 // ── Handlers ──
 function onSend(text: string, images: any[], context: any[]) {
   // Clear stale stage effects from previous turn
-  Object.keys(touchedMap).forEach(k => delete touchedMap[k])
-  activeDiff.value = null
-  modifyingSet.value = new Set()
+  clearAllStageEffects()
   if (editingMessageId.value !== null) {
     // Editing a past message → branch from that position, not append to the end.
     chat.resendMessage(

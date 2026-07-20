@@ -126,8 +126,19 @@ function applyTheme(): void {
   monaco.editor.setTheme('vte-stage')
 }
 
-function disposeModels(): void {
+/**
+ * Dispose the current before/after models SAFELY.
+ *
+ * CRITICAL ORDER: the diff editor holds live references to these models. If we
+ * dispose a model while the editor still points at it, Monaco throws
+ * "TextModel got disposed before DiffEditorWidget model got reset". So we must
+ * FIRST detach the editor's model (setModel(null)) and only THEN dispose.
+ * Callers that are about to install *new* models should pass detach=false and
+ * dispose the OLD handles after setModel(newModels) has switched the reference.
+ */
+function disposeModels(detach = true): void {
   try {
+    if (detach && editor) { try { editor.setModel(null) } catch {} }
     if (beforeModel) { beforeModel.dispose(); beforeModel = null }
     if (afterModel) { afterModel.dispose(); afterModel = null }
   } catch (e) {
@@ -161,13 +172,19 @@ function updateDiff(d: { path: string; before: string; after: string }): void {
   fallbackText.value = formatFallback(d)
 
   try {
-    disposeModels()
+    // Keep old handles; dispose them only AFTER setModel switches the editor's
+    // reference to the new models (prevents "TextModel got disposed" crash).
+    const oldBefore = beforeModel
+    const oldAfter = afterModel
     fileName.value = d.path.split('/').pop() || d.path
     filePath.value = d.path
     const lang = langForPath(d.path)
     beforeModel = monaco.editor.createModel(d.before || '', lang)
     afterModel = monaco.editor.createModel(d.after || '', lang)
     editor.setModel({ original: beforeModel, modified: afterModel })
+    // Editor no longer references the old models — safe to dispose them now.
+    try { oldBefore?.dispose() } catch {}
+    try { oldAfter?.dispose() } catch {}
     // Log container dimensions for diagnosing "blank Monaco" issues.
     const rect = containerRef.value?.getBoundingClientRect()
     console.log(`[VTE-Stage] Diff model set: ${fileName.value} (before=${d.before.length} chars, after=${d.after.length} chars, container=${rect?.width}x${rect?.height})`)
@@ -307,8 +324,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  disposeModels()
+  // Dispose the EDITOR first — that resets its internal model reference, so the
+  // subsequent model dispose won't throw "TextModel got disposed before
+  // DiffEditorWidget model got reset". (This was the crash-on-close root cause.)
   if (editor) { try { editor.dispose() } catch {} editor = null }
+  disposeModels(false) // editor already gone; no need to detach
   if (raf) cancelAnimationFrame(raf)
 })
 </script>
