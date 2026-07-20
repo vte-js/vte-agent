@@ -16,6 +16,8 @@ const props = defineProps<{
   root: string
   /** VTE Stage: per-path touch info (op + ts), keyed by absolute path. */
   touched?: Record<string, { op: string; ts: number }>
+  /** VTE Stage: paths actively being modified by LLM. */
+  modifying?: Set<string>
 }>()
 
 const emit = defineEmits<{
@@ -249,6 +251,7 @@ watch(
           :rename-input="renameInput"
           :create-input="createInput"
           :touched="touched"
+          :modifying="modifying"
           @toggle="toggleDir"
           @select="selectFile"
           @contextmenu="onNodeContextmenu"
@@ -425,5 +428,33 @@ watch(
 @keyframes stage-pulse-edit {
   0%, 100% { background: var(--vte-stage-edit-bg); }
   50% { background: rgba(245, 158, 11, 0.26); }
+}
+
+/* ═══ VTE Stage — "modifying" live state (LLM actively editing) ═══ */
+:deep(.tree-item.modifying) {
+  background: var(--vte-stage-modifying-bg, rgba(99,102,241,0.12));
+  box-shadow: inset 2px 0 0 var(--vte-primary, #6366f1);
+}
+:deep(.tree-item.modifying) .tree-label {
+  color: var(--vte-primary, #6366f1);
+  font-style: italic;
+}
+:deep(.tree-modifying-spinner) {
+  color: var(--vte-primary, #6366f1);
+  flex-shrink: 0;
+  animation: stage-spin 1.2s linear infinite;
+}
+@keyframes stage-spin {
+  to { transform: rotate(360deg); }
+}
+:deep(.tree-modifying-tag) {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--vte-primary, #6366f1);
+  background: rgba(99,102,241,0.15);
+  letter-spacing: 0.5px;
 }
 </style>

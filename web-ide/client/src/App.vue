@@ -62,9 +62,26 @@ const editRef = ref('')
 const editContext = ref<any[]>([])
 const editingMessageId = ref<number | null>(null)
 
-// ── VTE Stage: file-touch highlight map + active Monaco diff ──
+// ── VTE Stage: file-touch highlight map + active Monaco diff + live modifying set ──
 const touchedMap = reactive<Record<string, { op: string; ts: number }>>({})
 const activeDiff = ref<{ path: string; before: string; after: string; agentId: string } | null>(null)
+const modifyingSet = ref<Set<string>>(new Set())
+
+// Auto-clear: highlights and diff fade out after inactivity.
+const STAGE_FADE_MS = 8000 // 8s of no new touches → clear everything
+let fadeTimer: ReturnType<typeof setTimeout> | null = null
+function resetFadeTimer() {
+  if (fadeTimer) clearTimeout(fadeTimer)
+  fadeTimer = setTimeout(clearStageEffects, STAGE_FADE_MS)
+}
+function clearStageEffects() {
+  // Keep only entries newer than FADE_MS (guard against race).
+  const cutoff = Date.now() - STAGE_FADE_MS - 500
+  for (const [k, v] of Object.entries(touchedMap)) {
+    if (v.ts < cutoff) delete touchedMap[k]
+  }
+  if (Object.keys(touchedMap).length === 0) activeDiff.value = null
+}
 
 // Permission dialog
 const showAuthDialog = ref(false)
@@ -324,9 +341,18 @@ onMounted(() => {
       }
     } else if (msg.type === 'stage:file_touch') {
       touchedMap[msg.path] = { op: msg.op, ts: Date.now() }
+      resetFadeTimer()
+    } else if (msg.type === 'stage:file_modifying') {
+      modifyingSet.value = new Set([...modifyingSet.value, msg.path])
+      resetFadeTimer()
     } else if (msg.type === 'stage:file_write_done') {
+      // Remove from "modifying" set (write completed), then set highlight + diff.
+      const next = new Set(modifyingSet.value)
+      next.delete(msg.path)
+      modifyingSet.value = next
       touchedMap[msg.path] = { op: 'write', ts: Date.now() }
       activeDiff.value = { path: msg.path, before: msg.before, after: msg.after, agentId: msg.agentId }
+      resetFadeTimer()
     }
   })
   window.addEventListener('keydown', onEscKey)
@@ -338,6 +364,10 @@ onUnmounted(() => {
 
 // ── Handlers ──
 function onSend(text: string, images: any[], context: any[]) {
+  // Clear stale stage effects from previous turn
+  Object.keys(touchedMap).forEach(k => delete touchedMap[k])
+  activeDiff.value = null
+  modifyingSet.value = new Set()
   if (editingMessageId.value !== null) {
     // Editing a past message → branch from that position, not append to the end.
     chat.resendMessage(
@@ -602,7 +632,7 @@ function onNewSession() {
             <svg class="proj-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-3H5a2 2 0 0 0-2 3z"/></svg>
             <span>文件</span>
           </div>
-          <ProjectTree v-if="workspace" :root="workspace" :touched="touchedMap" @select="onSelectFile" />
+          <ProjectTree v-if="workspace" :root="workspace" :touched="touchedMap" :modifying="modifyingSet" @select="onSelectFile" />
         </div>
         <GitStatus />
       </div>

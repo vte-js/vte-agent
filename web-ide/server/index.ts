@@ -282,6 +282,8 @@ function deriveStageFileTouch(u: any): void {
   if (name === 'write' || name === 'edit') {
     const p = resolveWsPath(String(args.path || ''))
     if (!p) return
+    // ① Immediately signal "modifying" so the file tree shows a live spinner.
+    post({ type: 'stage:file_modifying', ts: Date.now(), agentId: 'main', path: p, op: name === 'write' ? 'write' : 'edit' })
     // Read the CURRENT file content now (before the tool executes) so we
     // have a real "before" to diff against once the write lands.
     let before = ''

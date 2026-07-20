@@ -19,6 +19,8 @@ const props = defineProps<{
   createInput: { parentPath: string; kind: 'file' | 'folder' } | null
   /** VTE Stage: per-path touch info (op + timestamp). Keyed by absolute path. */
   touched?: Record<string, { op: string; ts: number }>
+  /** VTE Stage: paths actively being modified by LLM (tool_call sent, awaiting tool_result). */
+  modifying?: Set<string>
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +35,9 @@ const touchClass = computed(() => {
   if (!t) return {}
   return { touched: true, [`touched-${t.op}`]: true }
 })
+
+// Stage modifying: LLM is actively writing/editing this file right now.
+const isModifying = computed(() => props.modifying?.has(props.item.path) ?? false)
 
 const FILE_COLORS: Record<string, string> = {
   ts: '#3178c6', tsx: '#3178c6', js: '#f7df1e', jsx: '#f7df1e',
@@ -92,6 +97,7 @@ const hasCreateInput = computed(() => props.createInput?.parentPath === props.it
           :rename-input="renameInput"
           :create-input="createInput"
           :touched="touched"
+          :modifying="modifying"
           @toggle="(it) => emit('toggle', it)"
           @select="(it) => emit('select', it)"
           @contextmenu="(ev, it, k) => emit('contextmenu', ev, it, k)"
@@ -134,12 +140,14 @@ const hasCreateInput = computed(() => props.createInput?.parentPath === props.it
   <template v-else>
     <div
       class="tree-item file"
-      :class="[{ nested: isNested, selected: selectedPath === item.path }, touchClass]"
+      :class="[{ nested: isNested, selected: selectedPath === item.path, modifying: isModifying }, touchClass]"
       @click.stop="emit('select', item)"
       @contextmenu.prevent.stop="emit('contextmenu', $event, item, 'file')"
     >
-      <svg class="tree-file-icon" :style="{ color: fileColor(item.ext) }" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+      <svg v-if="isModifying" class="tree-modifying-spinner" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v4m0 12v4M2 12h4m12 0h4m-3.5-6.5L17 7m-10 10l1.5 1.5M18.5 16.5L17 15M7 9L5.5 7.5"/><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1.2s" repeatCount="indefinite"/></svg>
+      <svg v-else class="tree-file-icon" :style="{ color: fileColor(item.ext) }" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
       <span class="tree-label">{{ item.name }}</span>
+      <span v-if="isModifying" class="tree-modifying-tag">修改中</span>
     </div>
   </template>
 </template>

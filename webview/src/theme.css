@@ -28,6 +28,7 @@
   --vte-stage-write-bg: var(--vte-primary-muted, rgba(99, 102, 241, 0.16));
   --vte-stage-edit-bg: rgba(245, 158, 11, 0.14);
   --vte-stage-delete-bg: rgba(244, 135, 113, 0.12);
+  --vte-stage-modifying-bg: rgba(99, 102, 241, 0.12);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

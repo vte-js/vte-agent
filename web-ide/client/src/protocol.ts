@@ -33,6 +33,14 @@ export interface StageFileWriteDone {
   before: string
   after: string
 }
+// An agent is actively modifying a file (tool_call sent, tool_result pending).
+export interface StageFileModifying {
+  type: 'stage:file_modifying'
+  ts: number
+  agentId: string
+  path: string
+  op: 'write' | 'edit'
+}
 
 // Top-level server -> client
 export type ServerMessage =
@@ -43,6 +51,7 @@ export type ServerMessage =
   | { type: 'configData'; workspace?: string; models: Array<{ name: string; apiKey: string; apiBase: string; model: string }>; subAgentTimeout?: number; forceMultiAgent?: boolean }
   | { type: 'cleared' }
   | StageFileTouch
+  | StageFileModifying
   | StageFileWriteDone
 
 // Client -> server

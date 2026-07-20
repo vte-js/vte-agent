@@ -38,6 +38,8 @@ function deriveStageFileTouch(u) {
   if (name === 'write' || name === 'edit') {
     const p = path.resolve(currentWorkspace, String(args.path || ''))
     if (!p) return
+    // ① Immediately signal "modifying" (NEW in M1-opt)
+    post({ type: 'stage:file_modifying', ts: Date.now(), agentId: 'main', path: p, op: name === 'write' ? 'write' : 'edit' })
     let before = ''
     try { before = mockRead(p) } catch { /* new file */ }
     pendingWrites.set(u.toolCallId, { path: p, before })
@@ -50,42 +52,82 @@ function flushStageFileWrite(u) {
   pendingWrites.delete(u.toolCallId)
   let after = ''
   try { after = mockRead(pending.path) } catch { /* removed */ }
-  post({ type: 'stage:file_write_done', ts: Date.now(), agentId: 'main', path: pending.path, before: pending.before, after })
+  post({
+    type: 'stage:file_write_done',
+    ts: Date.now(),
+    agentId: 'main',
+    path: pending.path,
+    before: pending.before,
+    after,
+  })
 }
 
-// ── Scenario 1: edit an EXISTING file ──
+// ═══════════════════════════════════════════
+// Scenario 1: edit an EXISTING file
+//   Expected events: modifying → touch(edit) → write_done
+// ═══════════════════════════════════════════
 deriveStageFileTouch({ type: 'tool_call', toolCallId: 'c1', name: 'edit', arguments: { path: 'foo.ts', old_string: 'OLD', new_string: 'NEW' } })
 fsMap.set('/ws/foo.ts', 'NEW CONTENT') // simulate the tool writing
 flushStageFileWrite({ type: 'tool_result', toolCallId: 'c1' })
 
-// ── Scenario 2: read a file (no diff emitted) ──
+// ═══════════════════════════════════════════
+// Scenario 2: read a file (no diff/modifying emitted)
+// ═══════════════════════════════════════════
 deriveStageFileTouch({ type: 'tool_call', toolCallId: 'c2', name: 'read', arguments: { path: 'bar.ts' } })
 
-// ── Scenario 3: write a NEW file (before should be '') ──
+// ═══════════════════════════════════════════
+// Scenario 3: write a NEW file (before should be '')
+// ═══════════════════════════════════════════
 deriveStageFileTouch({ type: 'tool_call', toolCallId: 'c3', name: 'write', arguments: { path: 'new.ts', content: 'FRESH' } })
 fsMap.set('/ws/new.ts', 'FRESH')
 flushStageFileWrite({ type: 'tool_result', toolCallId: 'c3' })
 
-// ── Scenario 4: tool_result with NO matching tool_call (idempotent no-op) ──
+// ═══════════════════════════════════════════
+// Scenario 4: orphan tool_result (no matching call)
+// ═══════════════════════════════════════════
 flushStageFileWrite({ type: 'tool_result', toolCallId: 'orphan' })
 
-// ── Assertions ──
+// ═══════════════════════════════════════════
+// Assertions
+// ═══════════════════════════════════════════
+
+// Scenario 1: edit existing file → modifying + touch + write_done
+const modFoo = out.filter((m) => m.type === 'stage:file_modifying' && m.path === '/ws/foo.ts')
 const touchFoo = out.find((m) => m.type === 'stage:file_touch' && m.path === '/ws/foo.ts')
 const writeDoneFoo = out.find((m) => m.type === 'stage:file_write_done' && m.path === '/ws/foo.ts')
+
+assert.ok(modFoo.length === 1 && modFoo[0].op === 'edit', '① edit should emit stage:file_modifying op=edit FIRST')
+assert.ok(touchFoo && touchFoo.op === 'edit', '② edit should emit stage:file_touch op=edit AFTER modifying')
+assert.ok(writeDoneFoo, '③ edit should emit stage:file_write_done')
+assert.strictEqual(writeDoneFoo.before, 'OLD CONTENT', '④ before must be pre-edit content')
+assert.strictEqual(writeDoneFoo.after, 'NEW CONTENT', '⑤ after must be post-edit content')
+
+// Event ordering: modifying MUST come before touch for same path
+const fooEvents = out.filter((m) => m.path === '/ws/foo.ts')
+const modIdx = fooEvents.findIndex((m) => m.type === 'stage:file_modifying')
+const touchIdx = fooEvents.findIndex((m) => m.type === 'stage:file_touch')
+assert.ok(modIdx < touchIdx, '⑥ modifying event must precede file_touch event')
+
+// Scenario 2: read only emits touch (no modifying, no write_done)
 const readBar = out.find((m) => m.type === 'stage:file_touch' && m.path === '/ws/bar.ts')
+assert.ok(readBar && readBar.op === 'read', '⑦ read should emit file_touch op=read')
+assert.ok(!out.some((m) => m.type === 'stage:file_modifying' && m.path === '/ws/bar.ts'), '⑧ read must NOT emit modifying')
+assert.ok(!out.some((m) => m.type === 'stage:file_write_done' && m.path === '/ws/bar.ts'), '⑨ read must NOT emit a diff')
+
+// Scenario 3: new file
 const writeDoneNew = out.find((m) => m.type === 'stage:file_write_done' && m.path === '/ws/new.ts')
+assert.ok(writeDoneNew && writeDoneNew.before === '', '⑩ new-file before must be empty string')
+assert.strictEqual(writeDoneNew.after, 'FRESH', '⑪ new-file after must equal written content')
+const modNew = out.some((m) => m.type === 'stage:file_modifying' && m.path === '/ws/new.ts')
+assert.ok(modNew, '⑫ write to NEW file must also emit modifying')
 
-assert.ok(touchFoo && touchFoo.op === 'edit', 'edit should emit file_touch op=edit')
-assert.ok(writeDoneFoo, 'edit should emit file_write_done')
-assert.strictEqual(writeDoneFoo.before, 'OLD CONTENT', 'before must be the pre-edit content (read at tool_call time)')
-assert.strictEqual(writeDoneFoo.after, 'NEW CONTENT', 'after must be the post-edit content (read at tool_result time)')
-assert.ok(readBar && readBar.op === 'read', 'read should emit file_touch op=read')
-assert.ok(!out.some((m) => m.type === 'stage:file_write_done' && m.path === '/ws/bar.ts'), 'read must NOT emit a diff')
-assert.ok(writeDoneNew && writeDoneNew.before === '', 'new-file before must be empty string')
-assert.strictEqual(writeDoneNew.after, 'FRESH', 'new-file after must equal written content')
-assert.strictEqual(pendingWrites.size, 0, 'pendingWrites must be drained')
-assert.ok(!out.some((m) => m.agentId !== 'main'), 'agentId defaults to main')
+// Scenario 4: orphan idempotent
+assert.strictEqual(pendingWrites.size, 0, '⑭ pendingWrites must be drained')
+assert.ok(!out.some((m) => m.agentId !== 'main'), '⑮ agentId defaults to main')
 
-console.log('✅ stage-derive logic test PASSED')
-console.log('   events emitted:', out.length)
-out.forEach((m) => console.log('   •', m.type, m.path || '', m.op || '', m.before !== undefined ? `before=${JSON.stringify(m.before)} after=${JSON.stringify(m.after)}` : ''))
+console.log('✅ stage-derive logic test PASSED (' + out.length + ' events)')
+console.log('   event sequence:')
+out.forEach((m) => {
+  const extra = m.before !== undefined ? `  before=${JSON.stringify(m.before)} after=${JSON.stringify(m.after)}` : ''
+  console.log('   •', m.type.padEnd(26), (m.path || '').padEnd(20), m.op || '', extra)
+})
