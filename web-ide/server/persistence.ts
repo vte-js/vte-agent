@@ -45,8 +45,8 @@ export class ConfigPersistence {
   private configDir: string
   private cache: PersistedConfig | null = null
 
-  constructor(private workspaceRoot: string) {
-    this.configDir = path.join(workspaceRoot, CONFIG_DIR)
+  constructor(private workspaceRoot: string, private configDirOverride?: string) {
+    this.configDir = configDirOverride ?? path.join(workspaceRoot, CONFIG_DIR)
     this.configPath = path.join(this.configDir, CONFIG_FILE)
   }
 

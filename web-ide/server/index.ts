@@ -19,6 +19,7 @@
 import * as http from 'http'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as os from 'os'
 import { WebSocketServer, WebSocket } from 'ws'
 
 import { setHost } from '../../src/host/registry'
@@ -31,7 +32,7 @@ import { Scheduler, ScheduleConfig } from '../../src/agent/scheduler'
 import { BUILTIN_ROLES } from '../../src/agent/agent-role'
 import { SessionManager } from '../../src/agent/session-manager'
 import { WebIDEHostAdapter, WebIDEGit } from './host-adapter'
-import { ConfigPersistence } from './persistence'
+import { ConfigPersistence, type PersistedConfig } from './persistence'
 import { WorkspaceManager, WorkspaceEntry } from './workspace-manager'
 import { type ChatHistoryPayload } from '../../src/agent/history-store'
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../../src/skills/builtin'
@@ -42,6 +43,13 @@ const API_KEY = process.env.VTE_API_KEY || ''
 const API_BASE = process.env.VTE_API_BASE || 'https://api.openai.com/v1'
 const MODEL = process.env.VTE_MODEL || 'gpt-4o-mini'
 const MOCK = process.env.VTE_MOCK === '1'
+
+// Host-global default model config, stored at ~/.vte-web-ide/config.json
+// (alongside the workspace registry). Shared/inherited by EVERY workspace so
+// the user only configures models ONCE — switching to a fresh workspace
+// no longer loses the API key / model selection.
+const GLOBAL_CONFIG_DIR = path.join(os.homedir(), '.vte-web-ide')
+const globalPersistence = new ConfigPersistence(GLOBAL_CONFIG_DIR, GLOBAL_CONFIG_DIR)
 
 // Mutable current workspace (changes when the user switches)
 let currentWorkspace = INITIAL_WORKSPACE
@@ -98,35 +106,54 @@ async function listDirAndPost(dirPath: string): Promise<void> {
   post({ type: 'fs:listResult', path: dirPath, items })
 }
 
-async function configData() {
-  const browserConfig = await persistence.getBrowserConfig()
-  // If no persisted models, seed from env vars as the default profile
-  if (browserConfig.models.length === 0) {
-    return {
-      type: 'configData',
-      workspace: currentWorkspace,
-      models: [
-        {
-          name: MODEL,
-          apiKey: API_KEY ? '***' : '',
-          apiBase: API_BASE,
-          model: MODEL,
-        },
-      ],
-      activeModelIndex: 0,
-      subAgentTimeout: 300,
-      forceMultiAgent: false,
-      reasoningLevel: 'medium',
+/**
+ * Resolve the effective model config with a 3-tier precedence:
+ *   1. Per-workspace override  — `<workspace>/.vte/config.json` (if it has models)
+ *   2. Host-global default     — `~/.vte-web-ide/config.json` (INHERITED by all workspaces)
+ *   3. Environment fallback   — seed from VTE_API_KEY/MODEL into the GLOBAL default
+ *
+ * The global default is what makes model config persist across workspace switches:
+ * once the user saves a model in ANY workspace, every fresh workspace inherits it.
+ */
+async function resolveConfig(): Promise<PersistedConfig> {
+  const local = await persistence.load()
+  if (local.models.length > 0) {
+    // Migrate a legacy per-workspace config into the global default on first
+    // run, so it also becomes the inherited config for other workspaces.
+    const g = await globalPersistence.load()
+    if (g.models.length === 0) {
+      await globalPersistence.save(local)
     }
+    return local
   }
+
+  const g = await globalPersistence.load()
+  if (g.models.length > 0) return g
+
+  // Nothing configured anywhere yet — seed the GLOBAL default from env vars.
+  const seeded: PersistedConfig = {
+    models: API_KEY
+      ? [{ name: MODEL, apiKey: API_KEY, apiBase: API_BASE, model: MODEL }]
+      : [],
+    activeModelIndex: 0,
+    subAgentTimeout: 300,
+    forceMultiAgent: false,
+    reasoningLevel: 'medium',
+  }
+  await globalPersistence.save(seeded)
+  return seeded
+}
+
+async function configData() {
+  const c = await resolveConfig()
   return {
     type: 'configData',
     workspace: currentWorkspace,
-    models: browserConfig.models,
-    activeModelIndex: browserConfig.activeModelIndex,
-    subAgentTimeout: browserConfig.subAgentTimeout,
-    forceMultiAgent: browserConfig.forceMultiAgent,
-    reasoningLevel: browserConfig.reasoningLevel,
+    models: c.models.map((m) => ({ ...m, apiKey: m.apiKey ? '***' : '' })),
+    activeModelIndex: c.activeModelIndex,
+    subAgentTimeout: c.subAgentTimeout,
+    forceMultiAgent: c.forceMultiAgent,
+    reasoningLevel: c.reasoningLevel,
   }
 }
 
@@ -136,8 +163,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 /** Active model name for session metadata / auto-save. */
 async function activeModelName(): Promise<string> {
   try {
-    const m = await persistence.getActiveModel()
-    return m?.model || MODEL
+    const c = await resolveConfig()
+    return c.models[c.activeModelIndex]?.model || MODEL
   } catch {
     return MODEL
   }
@@ -304,9 +331,7 @@ async function handleChat(text: string, temperature = 0.7, topP = 1, maxTokens =
   try {
     // forceMultiAgent is the master switch: when ON, every chat goes through
     // the PM decomposition flow (mirrors panel.ts handleChat's behaviour).
-    const forceMA = persistence
-      ? (await persistence.getBrowserConfig()).forceMultiAgent
-      : false
+    const forceMA = (await globalPersistence.getBrowserConfig()).forceMultiAgent
     if (forceMA) {
       post({ type: 'multiAgent:delegationStart', request: text })
       await handleDecomposeRequest(text)
@@ -583,33 +608,21 @@ async function switchWorkspace(newPath: string): Promise<void> {
   sessionManager = new SessionManager(resolved)
   currentSessionId = null
 
-  // 3) Rebuild config persistence for new workspace
+  // 3) Rebuild config persistence for new workspace.
+  // resolveConfig() returns the per-workspace override if present, otherwise
+  // the host-global default (INHERITED across workspaces), falling back to
+  // env vars only when nothing has been configured yet.
   persistence = new ConfigPersistence(resolved)
-  const persisted = await persistence.load()
-  // Seed from env vars if no persisted models exist yet
-  if (persisted.models.length === 0 && API_KEY) {
-    await persistence.save({
-      models: [{
-        name: MODEL,
-        apiKey: API_KEY,
-        apiBase: API_BASE,
-        model: MODEL,
-      }],
-      activeModelIndex: 0,
-      subAgentTimeout: 300,
-      forceMultiAgent: false,
-      reasoningLevel: 'medium',
-    })
-  }
+  const swConfig = await resolveConfig()
+  const swActive = swConfig.models[swConfig.activeModelIndex] || null
 
   // 4) Rebuild engine with new context manager + workspace
-  const activeModel = await persistence.getActiveModel()
-  const engineModel = activeModel?.model || MODEL
-  const engineApiKey = activeModel?.apiKey || API_KEY
-  const engineApiBase = activeModel?.apiBase || API_BASE
+  const engineModel = swActive?.model || MODEL
+  const engineApiKey = swActive?.apiKey || API_KEY
+  const engineApiBase = swActive?.apiBase || API_BASE
   const ctx = new VTEContextManager(resolved)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, resolved)
-  engine.setReasoningLevel((persisted.reasoningLevel as any) || 'medium')
+  engine.setReasoningLevel((swConfig.reasoningLevel as any) || 'medium')
   engine.onViewUpdate = (u) => emitUpdate(u)
 
   // 5) Notify the client
@@ -641,34 +654,19 @@ async function main(): Promise<void> {
   await adapter.initialize()
   sessionManager = new SessionManager(currentWorkspace)
 
-  // 1b) Initialize config persistence (.vte/config.json)
+  // 1b) Initialize config persistence. Model config is host-global
+  // (inherited by every workspace) with an optional per-workspace override.
   persistence = new ConfigPersistence(currentWorkspace)
-  const persisted = await persistence.load()
-  // Seed from env vars if no persisted models exist yet
-  if (persisted.models.length === 0 && API_KEY) {
-    await persistence.save({
-      models: [{
-        name: MODEL,
-        apiKey: API_KEY,
-        apiBase: API_BASE,
-        model: MODEL,
-      }],
-      activeModelIndex: 0,
-      subAgentTimeout: 300,
-      forceMultiAgent: false,
-      reasoningLevel: 'medium',
-    })
-    console.log('[web-ide] seeded default model profile from env vars')
-  }
+  const initConfig = await resolveConfig()
+  const initActive = initConfig.models[initConfig.activeModelIndex] || null
 
-  // 2) Build the engine using persisted (or env-var) credentials
-  const activeModel = await persistence.getActiveModel()
-  const engineModel = activeModel?.model || MODEL
-  const engineApiKey = activeModel?.apiKey || API_KEY
-  const engineApiBase = activeModel?.apiBase || API_BASE
+  // 2) Build the engine using resolved (global / override / env) credentials
+  const engineModel = initActive?.model || MODEL
+  const engineApiKey = initActive?.apiKey || API_KEY
+  const engineApiBase = initActive?.apiBase || API_BASE
   const ctx = new VTEContextManager(currentWorkspace)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, currentWorkspace)
-  engine.setReasoningLevel((persisted.reasoningLevel as any) || 'medium')
+  engine.setReasoningLevel((initConfig.reasoningLevel as any) || 'medium')
   engine.onViewUpdate = (u) => emitUpdate(u)
 
   // 2b) Register the initial workspace in the global registry
@@ -878,12 +876,15 @@ async function main(): Promise<void> {
         post({ type: 'lsp:testResult', success: false, message: 'LSP not available in Web IDE host' })
         break
       case 'switchModel':
-        // Persist active model index and rebuild engine credentials
-        await persistence.setActiveModel(msg.index)
+        // Persist active model index to the host-global default (inherited
+        // by every workspace) and rebuild engine credentials.
+        await globalPersistence.setActiveModel(msg.index)
         break
       case 'saveModels':
-        // Persist model profiles (API keys preserved when client sends '***')
-        await persistence.updateModels(msg.models, msg.activeModelIndex, {
+        // Persist model profiles to the host-global default (API keys
+        // preserved when the client sends '***'). This is what makes the
+        // config survive workspace switches.
+        await globalPersistence.updateModels(msg.models, msg.activeModelIndex, {
           subAgentTimeout: msg.subAgentTimeout,
           forceMultiAgent: msg.forceMultiAgent,
         })
@@ -893,7 +894,7 @@ async function main(): Promise<void> {
         break
       case 'setReasoningLevel':
         if (msg.level) {
-          await persistence.setReasoningLevel(msg.level)
+          await globalPersistence.setReasoningLevel(msg.level)
           engine.setReasoningLevel(msg.level)
         }
         break
