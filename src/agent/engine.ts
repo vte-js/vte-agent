@@ -75,6 +75,20 @@ export class AgentEngine {
   private _consecutiveQuestionCalls = 0;
   private _questionLoopGuard = false;
   private static readonly MAX_CONSECUTIVE_QUESTIONS = 3;
+  /**
+   * Clarification rounds that PERSIST across turns until real work happens.
+   *
+   * `_consecutiveQuestionCalls` resets every turn, so "asked once per turn for
+   * 3 turns" never trips its guard — the user gets pestered repeatedly for a
+   * simple request like "修改 test.ts". This counter only resets when the agent
+   * actually mutates a file (write/edit) or the session is cleared, so a chain
+   * of ask→vague-answer→ask accumulates and is capped. */
+  private _clarifyRounds = 0;
+  private static readonly MAX_CLARIFY_ROUNDS = 2;
+  /** True if the immediately-previous turn ended by asking the user something.
+   *  Lets us keep `_clarifyRounds` across an ask→answer continuation while still
+   *  resetting it when the user starts a genuinely new task/question. */
+  private _lastTurnAskedQuestion = false;
   /** Optional explicit tool whitelist. `null` = no tools, `undefined` = default. */
   private _allowedTools?: string[] | null = undefined;
 
@@ -423,6 +437,11 @@ export class AgentEngine {
     this._questionSessionDone = false;
     this._questionSkipped = false; // Also reset skip flag per-chat to avoid stale skips silencing all future questions
     this._consecutiveQuestionCalls = 0;
+    // Cross-turn clarify counter: keep it if this message is the answer to a
+    // question we just asked (a continuation); reset it for a fresh task so a
+    // brand-new request isn't blocked by clarifications spent on a prior one.
+    if (!this._lastTurnAskedQuestion) this._clarifyRounds = 0;
+    this._lastTurnAskedQuestion = false;
     this._enforceRetryCount = 0;
     this._toolCallCount = 0;
     // _questionSkipped persists across turns — only reset by new chat session
@@ -875,6 +894,24 @@ export class AgentEngine {
           });
           continue;
         }
+        // Guard (CROSS-TURN): stop clarifying after N rounds without any real
+        // edit. Single-step questions are the ones that loop (ask → vague answer
+        // → ask again in the next turn). Multi-step batches set sessionDone and
+        // are handled above, so we only count single-step clarifications here.
+        const isSingleStepClarify = !(Array.isArray(args.steps) && args.steps.length > 1);
+        if (isSingleStepClarify) {
+          this._clarifyRounds++;
+          if (this._clarifyRounds > AgentEngine.MAX_CLARIFY_ROUNDS) {
+            console.log(`[VTE-Q] → BLOCKED (clarifyRounds=${this._clarifyRounds}): too many clarifications without progress`);
+            this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+            this.onViewUpdate?.({ type: 'tool_result', toolCallId: tc.id, result: '已停止追问（多轮澄清仍未开始动手）', elapsed: 0 });
+            results.push({
+              type: 'text',
+              content: '你已多次就同一任务向用户澄清但仍未动手。请停止调用 question 工具，基于现有信息做出合理默认选择，直接读取目标文件并完成修改；在最终回复里简要说明你所做的假设即可。',
+            });
+            continue;
+          }
+        }
         // Guard: stop asking after N consecutive question calls in one turn.
         this._consecutiveQuestionCalls++;
         if (this._consecutiveQuestionCalls > AgentEngine.MAX_CONSECUTIVE_QUESTIONS) {
@@ -885,7 +922,7 @@ export class AgentEngine {
           continue;
         }
         console.log(`[VTE] Question tool: asking user`);
-        this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
+        this._lastTurnAskedQuestion = true; // next turn's message is likely the answer → keep clarify counter
         this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: 'question', arguments: args });
 
         // ── Detect mode: single-step vs session-based multi-step ──
@@ -1033,7 +1070,13 @@ export class AgentEngine {
         continue;
       }
 
-      this._consecutiveQuestionCalls = 0; // any non-question tool resets the counter
+      this._consecutiveQuestionCalls = 0; // any non-question tool resets the within-turn counter
+      // Real progress (an actual file mutation) clears the cross-turn clarify
+      // counter — read/list/grep exploration does NOT, so pure "scan then ask"
+      // loops still get capped.
+      if (tc.function.name === 'write' || tc.function.name === 'edit') {
+        this._clarifyRounds = 0;
+      }
       this.onViewUpdate?.({ type: 'tool_call', toolCallId: tc.id, name: tc.function.name, arguments: args });
       const startTime = Date.now();
 
@@ -1084,6 +1127,7 @@ export class AgentEngine {
     this._questionBackRequested = false;
     this._questionSessionDone = false;
     this._consecutiveQuestionCalls = 0;
+    this._clarifyRounds = 0;
   }
 
   /**
