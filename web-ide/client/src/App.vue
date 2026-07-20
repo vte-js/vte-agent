@@ -352,12 +352,17 @@ onMounted(() => {
       resetFadeTimer()
     } else if (msg.type === 'stage:file_write_done') {
       // Remove from "modifying" set (write completed), then set highlight + diff.
+      console.log(`[VTE-Stage] file_write_done: path=${msg.path}, before=${(msg.before||'').length} chars, after=${(msg.after||'').length} chars`)
       const next = new Set(modifyingSet.value)
       next.delete(msg.path)
       modifyingSet.value = next
       touchedMap[msg.path] = { op: 'write', ts: Date.now() }
-      activeDiff.value = { path: msg.path, before: msg.before, after: msg.after, agentId: msg.agentId }
+      activeDiff.value = { path: msg.path, before: msg.before || '', after: msg.after || '', agentId: msg.agentId }
       resetFadeTimer()
+    } else if (msg.type === 'response' || msg.type === 'error') {
+      // LLM turn is done — clear file-tree highlights and diff popup immediately.
+      // The 8s fade timer is a safety net; this is the explicit "turn complete" signal.
+      clearStageEffects()
     }
   })
   window.addEventListener('keydown', onEscKey)

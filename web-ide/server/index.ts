@@ -303,6 +303,7 @@ function deriveStageFileTouch(u: any): void {
   if (name === 'write' || name === 'edit') {
     const p = resolveWsPath(String(args.path || ''))
     if (!p) return
+    console.log(`[VTE-Stage-Server] deriveStageFileTouch: name=${name}, args.path=${args.path}, resolved=${p}`)
     // ① Immediately signal "modifying" so the file tree shows a live spinner.
     //    Do NOT send stage:file_touch yet — that would immediately overwrite the
     //    spinner with a highlight.  We defer touch until tool_result arrives so
@@ -313,6 +314,7 @@ function deriveStageFileTouch(u: any): void {
     // have a real "before" to diff against once the write lands.
     let before = ''
     try { before = fs.readFileSync(p, 'utf-8') } catch { /* new file: nothing to diff against */ }
+    console.log(`[VTE-Stage-Server] before content read: ${before.length} chars for ${p}`)
     pendingWrites.set(u.toolCallId, { path: p, before })
   }
   // 'list' and other tools do not touch a single highlightable file.
@@ -320,11 +322,15 @@ function deriveStageFileTouch(u: any): void {
 
 function flushStageFileWrite(u: any): void {
   const pending = pendingWrites.get(u.toolCallId)
-  if (!pending) return
+  if (!pending) {
+    console.log(`[VTE-Stage-Server] flushStageFileWrite: no pending write for toolCallId=${u.toolCallId}, skipping`)
+    return
+  }
   pendingWrites.delete(u.toolCallId)
   // The file has now been written — read it back as the "after".
   let after = ''
   try { after = fs.readFileSync(pending.path, 'utf-8') } catch { /* removed right after write */ }
+  console.log(`[VTE-Stage-Server] flushStageFileWrite: path=${pending.path}, before=${pending.before.length} chars, after=${after.length} chars`)
   // Send touch NOW (not in deriveStageFileTouch) so "modifying" has time to show.
   post({ type: 'stage:file_touch', ts: Date.now(), agentId: 'main', path: pending.path, op: 'write' })
   // Send diff data for Monaco dock.

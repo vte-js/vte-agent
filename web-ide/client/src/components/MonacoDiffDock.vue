@@ -144,6 +144,19 @@ function updateDiff(d: { path: string; before: string; after: string }): void {
     return
   }
 
+  const bLen = (d.before || '').length
+  const aLen = (d.after || '').length
+  console.log(`[VTE-Stage] updateDiff: path=${d.path}, before=${bLen} chars, after=${aLen} chars`)
+
+  // Safety net: if BOTH sides are empty or trivially short, show fallback instead of a
+  // blank Monaco editor (which looks like a rendering bug). This catches cases where
+  // the server's fs.readFileSync returned empty strings due to race/path issues.
+  if (bLen < 3 && aLen < 3) {
+    console.warn('[VTE-Stage] before+after both empty — showing fallback instead of blank Monaco')
+    setFallback(d)
+    return
+  }
+
   // Also update fallback in case user collapses and we need it
   fallbackText.value = formatFallback(d)
 
@@ -155,16 +168,20 @@ function updateDiff(d: { path: string; before: string; after: string }): void {
     beforeModel = monaco.editor.createModel(d.before || '', lang)
     afterModel = monaco.editor.createModel(d.after || '', lang)
     editor.setModel({ original: beforeModel, modified: afterModel })
-    console.log(`[VTE-Stage] Diff model set: ${fileName.value} (before=${d.before.length} chars, after=${d.after.length} chars)`)
+    // Log container dimensions for diagnosing "blank Monaco" issues.
+    const rect = containerRef.value?.getBoundingClientRect()
+    console.log(`[VTE-Stage] Diff model set: ${fileName.value} (before=${d.before.length} chars, after=${d.after.length} chars, container=${rect?.width}x${rect?.height})`)
     // Force a layout pass. With automaticLayout the ResizeObserver normally
     // handles resize, but when the diff editor is created and immediately
     // setModel()'d inside a flex container whose height resolves a tick
     // later, Monaco can paint with 0-sized panes and STAY BLANK (no error,
-    // so the fallback never triggers). An explicit layout() — plus a deferred
-    // one on the next frame — guarantees the split actually renders the
+    // so the fallback never triggers). An explicit layout() — plus deferred
+    // ones on subsequent frames — guarantees the split actually renders the
     // before/after content. This is the root cause of "diff popup empty".
     try { editor.layout() } catch {}
     requestAnimationFrame(() => { try { editor.layout() } catch {} })
+    // Third layout at ~200ms for slow-rendering containers (e.g., inside Teleport).
+    setTimeout(() => { try { editor.layout() } catch {} }, 200)
     // Scroll to first changed region instead of always line 1.
     nextTick(() => {
       try {
