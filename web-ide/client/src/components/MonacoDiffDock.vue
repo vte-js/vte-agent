@@ -156,6 +156,15 @@ function updateDiff(d: { path: string; before: string; after: string }): void {
     afterModel = monaco.editor.createModel(d.after || '', lang)
     editor.setModel({ original: beforeModel, modified: afterModel })
     console.log(`[VTE-Stage] Diff model set: ${fileName.value} (before=${d.before.length} chars, after=${d.after.length} chars)`)
+    // Force a layout pass. With automaticLayout the ResizeObserver normally
+    // handles resize, but when the diff editor is created and immediately
+    // setModel()'d inside a flex container whose height resolves a tick
+    // later, Monaco can paint with 0-sized panes and STAY BLANK (no error,
+    // so the fallback never triggers). An explicit layout() — plus a deferred
+    // one on the next frame — guarantees the split actually renders the
+    // before/after content. This is the root cause of "diff popup empty".
+    try { editor.layout() } catch {}
+    requestAnimationFrame(() => { try { editor.layout() } catch {} })
     // Scroll to first changed region instead of always line 1.
     nextTick(() => {
       try {

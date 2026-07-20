@@ -187,7 +187,12 @@ export class AgentEngine {
       userContent = parts
     }
 
-    this.messages.push({ role: 'user', content: userContent as string })
+    // Only push a user turn for a REAL (non-empty) message. Internal
+    // autonomous continuations must NOT inject an empty user turn (that made
+    // the model reply with a generic self-introduction).
+    if (userMessage.trim().length > 0) {
+      this.messages.push({ role: 'user', content: userContent as string })
+    }
 
     // Build system prompt using template engine
     const customInstructions = [
@@ -200,59 +205,73 @@ export class AgentEngine {
     // Trim history to save tokens (keep recent messages, summarize old ones)
     this.trimHistory()
 
+    // Autonomous agent loop: after a tool call, re-call the LLM with the
+    // updated history (tool results appended). No empty user message is
+    // injected (the old `return this.chat('')` pushed a blank user turn,
+    // making the model reply with a generic self-introduction).
     const startTime = Date.now()
-    const response = await this.callLLM(systemContent, temperature, topP, maxTokens)
-    const latencyMs = Date.now() - startTime
+    while (true) {
+      const response = await this.callLLM(systemContent, temperature, topP, maxTokens)
+      const latencyMs = Date.now() - startTime
 
-    // Record token usage
-    if (response.usage) {
-      trackTokens(this.tokenBudget, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0)
-    }
+      // Record token usage for every LLM call in the loop
+      if (response.usage) {
+        trackTokens(this.tokenBudget, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0)
+      }
 
-    const assistantMessage = response.choices[0]?.message
+      const assistantMessage = response.choices[0]?.message
 
-    if (!assistantMessage) {
-      return 'No response from model'
-    }
+      if (!assistantMessage) {
+        return 'No response from model'
+      }
 
-    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-      this.messages.push({
-        role: 'assistant',
-        content: assistantMessage.content || '',
-        toolCalls: assistantMessage.tool_calls.map(tc => ({
-          id: tc.id,
-          name: tc.function.name,
-          arguments: JSON.parse(tc.function.arguments),
-        })),
+      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+        this.messages.push({
+          role: 'assistant',
+          content: assistantMessage.content || '',
+          toolCalls: assistantMessage.tool_calls.map(tc => ({
+            id: tc.id,
+            name: tc.function.name,
+            arguments: JSON.parse(tc.function.arguments),
+          })),
+        })
+
+        const toolResults = await this.executeToolCalls(assistantMessage.tool_calls)
+        // Compress large tool results to save tokens
+        const compressedResults = this.compressToolResults(toolResults)
+        // Push each tool result with its tool_call_id so the API can pair
+        // it with the originating assistant tool_call (aligned by index).
+        for (let i = 0; i < assistantMessage.tool_calls.length; i++) {
+          const tc = assistantMessage.tool_calls[i]
+          const result = compressedResults[i]
+          this.messages.push({
+            role: 'tool',
+            content: result ? result.content : '',
+            tool_call_id: tc.id,
+          })
+        }
+
+        // Continue the loop: re-call the LLM with the updated history.
+        continue
+      }
+
+      this.messages.push({ role: 'assistant', content: assistantMessage.content || '' })
+
+      // Wrap response with system-reminder metadata
+      const rawContent = assistantMessage.content || ''
+      const wrappedContent = wrapResponse(rawContent, {
+        model: this.config.model,
+        tokens: response.usage ? {
+          prompt: response.usage.prompt_tokens || 0,
+          completion: response.usage.completion_tokens || 0,
+        } : undefined,
+        latencyMs,
       })
 
-      const toolResults = await this.executeToolCalls(assistantMessage.tool_calls)
-      // Compress large tool results to save tokens
-      const compressedResults = this.compressToolResults(toolResults)
-      this.messages.push({
-        role: 'tool',
-        content: compressedResults.map(r => r.content).join('\n\n'),
-      })
+      console.log(`[VTE] Response ready: tokens=${response.usage?.prompt_tokens || 0}+${response.usage?.completion_tokens || 0} latency=${latencyMs}ms`)
 
-      return this.chat('', temperature, topP, maxTokens)
+      return wrappedContent
     }
-
-    this.messages.push({ role: 'assistant', content: assistantMessage.content || '' })
-
-    // Wrap response with system-reminder metadata
-    const rawContent = assistantMessage.content || ''
-    const wrappedContent = wrapResponse(rawContent, {
-      model: this.config.model,
-      tokens: response.usage ? {
-        prompt: response.usage.prompt_tokens || 0,
-        completion: response.usage.completion_tokens || 0,
-      } : undefined,
-      latencyMs,
-    })
-
-    console.log(`[VTE] Response ready: tokens=${response.usage?.prompt_tokens || 0}+${response.usage?.completion_tokens || 0} latency=${latencyMs}ms`)
-
-    return wrappedContent
   }
 
   private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {

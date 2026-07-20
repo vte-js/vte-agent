@@ -144,6 +144,22 @@ async function resolveConfig(): Promise<PersistedConfig> {
   return seeded
 }
 
+/**
+ * Return the persistence instance that `resolveConfig()` actually READS from.
+ * `resolveConfig` prefers a per-workspace override (a workspace that has its
+ * own `.vte/config.json` with models) and falls back to the host-global
+ * default. Any WRITE (saveModels / switchModel / setReasoningLevel) MUST
+ * target the SAME instance, otherwise an added/edited model is written to the
+ * global file while `resolveConfig` keeps returning the workspace-local copy —
+ * making the save appear to "do nothing" (the exact bug reported for adding
+ * a model). Keeping read and write targets identical fixes that for good.
+ */
+async function activeConfigPersistence(): Promise<ConfigPersistence> {
+  const local = await persistence.load()
+  if (local.models.length > 0) return persistence
+  return globalPersistence
+}
+
 async function configData() {
   const c = await resolveConfig()
   return {
@@ -339,7 +355,9 @@ async function handleChat(text: string, temperature = 0.7, topP = 1, maxTokens =
   try {
     // forceMultiAgent is the master switch: when ON, every chat goes through
     // the PM decomposition flow (mirrors panel.ts handleChat's behaviour).
-    const forceMA = (await globalPersistence.getBrowserConfig()).forceMultiAgent
+    // Read from resolveConfig() (workspace-preferred, global fallback) so it
+    // stays consistent with where saveModels() now writes it.
+    const forceMA = (await resolveConfig()).forceMultiAgent
     if (forceMA) {
       post({ type: 'multiAgent:delegationStart', request: text })
       await handleDecomposeRequest(text)
@@ -884,15 +902,19 @@ async function main(): Promise<void> {
         post({ type: 'lsp:testResult', success: false, message: 'LSP not available in Web IDE host' })
         break
       case 'switchModel':
-        // Persist active model index to the host-global default (inherited
-        // by every workspace) and rebuild engine credentials.
-        await globalPersistence.setActiveModel(msg.index)
+        // Persist active model index to the SAME source resolveConfig() reads
+        // from (workspace-local if it has its own models, else the global
+        // default). Writing to global alone would be shadowed by a workspace
+        // override, so the switch wouldn't stick.
+        await (await activeConfigPersistence()).setActiveModel(msg.index)
         break
       case 'saveModels':
-        // Persist model profiles to the host-global default (API keys
-        // preserved when the client sends '***'). This is what makes the
-        // config survive workspace switches.
-        await globalPersistence.updateModels(msg.models, msg.activeModelIndex, {
+        // Persist model profiles to the SAME source resolveConfig() reads
+        // from (API keys preserved when the client sends '***'). Writing to
+        // global alone was the root cause of "新增模型时保存无效": a workspace
+        // that already had its own .vte/config.json kept returning that local
+        // copy, so an add/edit saved to global was invisible on reload.
+        await (await activeConfigPersistence()).updateModels(msg.models, msg.activeModelIndex, {
           subAgentTimeout: msg.subAgentTimeout,
           forceMultiAgent: msg.forceMultiAgent,
         })
@@ -902,7 +924,7 @@ async function main(): Promise<void> {
         break
       case 'setReasoningLevel':
         if (msg.level) {
-          await globalPersistence.setReasoningLevel(msg.level)
+          await (await activeConfigPersistence()).setReasoningLevel(msg.level)
           engine.setReasoningLevel(msg.level)
         }
         break

@@ -470,7 +470,13 @@ export class AgentEngine {
       userContent = parts;
     }
 
-    this.messages.push({ role: 'user', content: userContent as string });
+    // Only push a user turn for a REAL (non-empty) message. Internal
+    // autonomous continuations (chat('')) must NOT inject an empty user
+    // turn — that blank turn is what made the model believe the user sent
+    // "" and reply with a generic self-introduction.
+    if (userMessage.trim().length > 0) {
+      this.messages.push({ role: 'user', content: userContent as string });
+    }
 
     // Build system prompt using template engine
     let reasoningInstruction = '';
@@ -493,39 +499,50 @@ export class AgentEngine {
     // Signal new thinking phase to webview
     this.onViewUpdate?.({ type: 'thinking_start' });
 
+    // ── Autonomous agent loop ──
+    // After a tool call we feed the tool results back by calling the LLM
+    // AGAIN with the same message history (now ending in tool results). We
+    // intentionally do NOT inject an empty user message here — the old code
+    // did `return this.chat('', …)`, which pushed a blank user turn and
+    // made the model think the user sent "" (it then replied with a generic
+    // self-introduction). Looping also avoids unbounded recursion depth
+    // across many tool rounds.
     const startTime = Date.now();
-    const response = await this.callLLM(systemContent, temperature, topP, maxTokens);
-    const latencyMs = Date.now() - startTime;
+    while (true) {
+      // Signal a new thinking phase to the webview before every LLM call
+      this.onViewUpdate?.({ type: 'thinking_start' });
 
-    // Record token usage
-    if (response.usage) {
-      recordUsage(this.model, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0);
-      trackTokens(this.tokenBudget, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0);
-    }
+      const response = await this.callLLM(systemContent, temperature, topP, maxTokens);
+      const latencyMs = Date.now() - startTime;
 
-    const assistantMessage = response.choices[0]?.message;
+      // Record token usage for every LLM call in the loop
+      if (response.usage) {
+        recordUsage(this.model, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0);
+        trackTokens(this.tokenBudget, response.usage.prompt_tokens || 0, response.usage.completion_tokens || 0);
+      }
 
-    if (!assistantMessage) {
-      return 'No response from model';
-    }
+      const assistantMessage = response.choices[0]?.message;
 
-    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-      this.messages.push({
-        role: 'assistant',
-        content: assistantMessage.content || '',
-        toolCalls: assistantMessage.tool_calls.map(tc => ({
-          id: tc.id,
-          name: tc.function.name,
-          arguments: JSON.parse(tc.function.arguments),
-        })),
-      });
+      if (!assistantMessage) {
+        return 'No response from model';
+      }
 
-      const toolResults = await this.executeToolCalls(assistantMessage.tool_calls);
-      // Compress large tool results to save tokens
-      const compressedResults = this.compressToolResults(toolResults);
+      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+        this.messages.push({
+          role: 'assistant',
+          content: assistantMessage.content || '',
+          toolCalls: assistantMessage.tool_calls.map(tc => ({
+            id: tc.id,
+            name: tc.function.name,
+            arguments: JSON.parse(tc.function.arguments),
+          })),
+        });
 
-      // Push tool results with tool_call_id for each tool call
-      if (assistantMessage.tool_calls) {
+        const toolResults = await this.executeToolCalls(assistantMessage.tool_calls);
+        // Compress large tool results to save tokens
+        const compressedResults = this.compressToolResults(toolResults);
+
+        // Push tool results with tool_call_id for each tool call
         console.log(`[VTE] Pushing ${assistantMessage.tool_calls.length} tool results`);
         for (let i = 0; i < assistantMessage.tool_calls.length; i++) {
           const tc = assistantMessage.tool_calls[i];
@@ -540,42 +557,42 @@ export class AgentEngine {
           }
         }
         console.log(`[VTE] Total messages after tool results: ${this.messages.length}`);
+
+        // Track tool calls and enforce limit
+        this._toolCallCount += assistantMessage.tool_calls.length;
+        if (this._toolCallCount >= AgentEngine.MAX_TOOL_CALLS) {
+          console.log(`[VTE] MAX_TOOL_CALLS reached (${this._toolCallCount}), stopping loop`);
+          return `达到最大工具调用次数 (${AgentEngine.MAX_TOOL_CALLS})，已停止执行。`;
+        }
+
+        // Guard: model asked too many questions in a row — stop the loop.
+        if (this._questionLoopGuard) {
+          console.log(`[VTE] Question loop guard triggered after ${this._consecutiveQuestionCalls} calls, stopping`);
+          return '已连续多次向用户提问，已停止提问并直接给出结论。如需进一步操作，请基于已有信息执行。';
+        }
+
+        // Continue the loop: re-call the LLM with the updated history
+        // (tool results appended). No empty user message is injected.
+        continue;
       }
 
-      // Track tool calls and enforce limit
-      this._toolCallCount += assistantMessage.tool_calls.length;
-      if (this._toolCallCount >= AgentEngine.MAX_TOOL_CALLS) {
-        console.log(`[VTE] MAX_TOOL_CALLS reached (${this._toolCallCount}), stopping loop`);
-        return `达到最大工具调用次数 (${AgentEngine.MAX_TOOL_CALLS})，已停止执行。`;
-      }
+      this.messages.push({ role: 'assistant', content: assistantMessage.content || '' });
 
-      // Guard: model asked too many questions in a row — stop the loop.
-      if (this._questionLoopGuard) {
-        console.log(`[VTE] Question loop guard triggered after ${this._consecutiveQuestionCalls} calls, stopping`);
-        return '已连续多次向用户提问，已停止提问并直接给出结论。如需进一步操作，请基于已有信息执行。';
-      }
+      // Wrap response with system-reminder metadata
+      const rawContent = assistantMessage.content || '';
+      const wrappedContent = wrapResponse(rawContent, {
+        model: this.model,
+        tokens: response.usage ? {
+          prompt: response.usage.prompt_tokens || 0,
+          completion: response.usage.completion_tokens || 0,
+        } : undefined,
+        latencyMs,
+      });
 
-      // LLM-auto mode: no longer force task tracking — let LLM decide
+      console.log(`[VTE] Response ready: tokens=${response.usage?.prompt_tokens || 0}+${response.usage?.completion_tokens || 0} latency=${latencyMs}ms`);
 
-      return this.chat('', temperature, topP, maxTokens);
+      return wrappedContent;
     }
-
-    this.messages.push({ role: 'assistant', content: assistantMessage.content || '' });
-
-    // Wrap response with system-reminder metadata
-    const rawContent = assistantMessage.content || '';
-    const wrappedContent = wrapResponse(rawContent, {
-      model: this.model,
-      tokens: response.usage ? {
-        prompt: response.usage.prompt_tokens || 0,
-        completion: response.usage.completion_tokens || 0,
-      } : undefined,
-      latencyMs,
-    });
-
-    console.log(`[VTE] Response ready: tokens=${response.usage?.prompt_tokens || 0}+${response.usage?.completion_tokens || 0} latency=${latencyMs}ms`);
-
-    return wrappedContent;
   }
 
   private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {
