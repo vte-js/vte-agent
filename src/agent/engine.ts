@@ -287,15 +287,50 @@ export class AgentEngine {
    * Trim message history to stay within token budget.
    * Keeps: first user message (context) + last N messages + all tool calls in current turn.
    */
+  /**
+   * Trim old messages to keep token usage bounded.
+   *
+   * CRITICAL: the Responses API requires every `function_call_output` to have a
+   * matching `function_call` (same call_id) inside the same `input`. We must
+   * therefore never split an (assistant function_call ↔ tool result) pair across
+   * the trim boundary — otherwise the next request fails with
+   * "No tool call found for function call output with callId ...".
+   *
+   * Keeps: first message (initial context) + last N messages, but slides the
+   * window so it never begins on an orphaned tool result and never ends on a
+   * dangling assistant function_call (whose outputs fell outside the window).
+   */
   private trimHistory(): void {
     if (this.messages.length <= this.MAX_HISTORY_MESSAGES) return;
 
-    // Keep first message (initial context) + recent messages
-    const first = this.messages[0];
-    const recent = this.messages.slice(-this.MAX_HISTORY_MESSAGES);
+    const N = this.MAX_HISTORY_MESSAGES;
 
-    // Add summary of trimmed messages
-    const trimmedCount = this.messages.length - this.MAX_HISTORY_MESSAGES;
+    // Keep first message only if it is not itself an orphaned tool result.
+    const head = this.messages[0].role === 'tool' ? [] : [this.messages[0]];
+
+    // Slide the window start forward past any orphaned tool messages (their
+    // paired assistant function_call was trimmed away).
+    let start = this.messages.length - N;
+    if (start < 1) start = 1;
+    while (start < this.messages.length && this.messages[start].role === 'tool') {
+      start++;
+    }
+
+    // Slide the window end backward to drop dangling assistant function_calls
+    // (their tool results landed outside the window).
+    let end = this.messages.length;
+    while (end > start) {
+      const m = this.messages[end - 1];
+      const hasToolCalls = !!m.toolCalls && m.toolCalls.length > 0;
+      if (m.role === 'assistant' && hasToolCalls) {
+        end--;
+      } else {
+        break;
+      }
+    }
+
+    const recent = this.messages.slice(start, end);
+    const trimmedCount = this.messages.length - recent.length - head.length;
     const snapshot = this.context.getSnapshot();
     const filesRead = Array.from(snapshot.readFiles).slice(-5).join(', ') || 'none';
     const summary: AgentMessage = {
@@ -303,7 +338,7 @@ export class AgentEngine {
       content: `[Context: ${trimmedCount} earlier messages trimmed to save tokens. Key files read: ${filesRead}]`,
     };
 
-    this.messages = [first, summary, ...recent];
+    this.messages = [...head, summary, ...recent];
     console.log(`[VTE] Trimmed history: ${trimmedCount} messages removed`);
   }
 

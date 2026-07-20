@@ -74,6 +74,10 @@ export function messagesToResponsesInput(messages: AgentMessage[]): ResponsesInp
       continue;
     }
     if (m.role === 'tool') {
+      // Skip orphaned tool results: the Responses API rejects any
+      // `function_call_output` whose call_id has no matching `function_call`
+      // in the same input (→ "No tool call found for function call output").
+      if (!m.tool_call_id) continue;
       input.push({
         type: 'function_call_output',
         call_id: m.tool_call_id,
