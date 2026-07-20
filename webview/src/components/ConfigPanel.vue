@@ -317,7 +317,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  save: [config: { subAgentTimeout?: number; forceMultiAgent?: boolean }]
+  save: [config: { subAgentTimeout?: number; forceMultiAgent?: boolean; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }]
   selectModel: [index: number]
   saveModel: [index: number, profile: { name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }]
   deleteModel: [index: number]
@@ -364,7 +364,19 @@ function onPermissionChange(key: string, value: string) {
 }
 
 function onSave() {
-  emit('save', { subAgentTimeout: subAgentTimeout.value, forceMultiAgent: forceMultiAgent.value })
+  // Persist EVERY behavior/sampling setting, not just the two that used to
+  // round-trip. The other tabs (mode / taskMode / temperature / topP /
+  // maxTokens) are reactive props kept live by the host, so reading them here
+  // captures the user's current selection.
+  emit('save', {
+    subAgentTimeout: subAgentTimeout.value,
+    forceMultiAgent: forceMultiAgent.value,
+    mode: props.mode,
+    taskMode: props.taskMode,
+    temperature: props.temperature,
+    topP: props.topP,
+    maxTokens: props.maxTokens,
+  })
   showToast.value = true
   setTimeout(() => { showToast.value = false }, 2000)
 }

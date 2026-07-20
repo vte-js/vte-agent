@@ -198,6 +198,11 @@ const showSessions = ref(false)
 const temperature = ref(0.7)
 const topP = ref(1.0)
 const maxTokens = ref(4096)
+// Re-apply persisted sampling params when the server pushes configData on
+// (re)connect, so a refresh restores them instead of reverting to defaults.
+watch(() => config.temperature.value, (v) => { if (v != null) temperature.value = v }, { immediate: true })
+watch(() => config.topP.value, (v) => { if (v != null) topP.value = v }, { immediate: true })
+watch(() => config.maxTokens.value, (v) => { if (v != null) maxTokens.value = v }, { immediate: true })
 
 // ── Resizable panes (left & right widths) ──
 const leftWidth = ref(272)
@@ -416,10 +421,23 @@ function onSaveModel(index: number, profile: any) {
 function onDeleteModel(index: number) {
   config.deleteModel(index)
 }
-function onSaveConfig(cfg: { subAgentTimeout?: number; forceMultiAgent?: boolean }) {
+function onSaveConfig(cfg: { subAgentTimeout?: number; forceMultiAgent?: boolean; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }) {
   if (cfg.subAgentTimeout != null) config.subAgentTimeout.value = cfg.subAgentTimeout
   if (cfg.forceMultiAgent != null) config.forceMultiAgent.value = cfg.forceMultiAgent
-  config.saveConfig()
+  // Work mode: setMode persists it on the server (via setMode handler) AND
+  // re-syncs the local useMode ref through the broadcast modeChanged.
+  if (cfg.mode) mode.setMode(cfg.mode as any)
+  // Task mode: keep the local ref in sync (drives the ConfigPanel prop) and
+  // persist the choice on the server even though Web IDE doesn't act on it yet.
+  if (cfg.taskMode) {
+    config.taskMode.value = cfg.taskMode as any
+    send({ type: 'setTaskMode', mode: cfg.taskMode } as any)
+  }
+  if (cfg.temperature != null) temperature.value = cfg.temperature
+  if (cfg.topP != null) topP.value = cfg.topP
+  if (cfg.maxTokens != null) maxTokens.value = cfg.maxTokens
+  // Persist the whole behavior bundle so a refresh keeps every setting.
+  config.saveConfig(cfg)
 }
 function onSelectMode(m: 'plan' | 'code') {
   mode.setMode(m)
@@ -802,7 +820,7 @@ function onNewSession() {
       :initial-sub-agent-timeout="config.subAgentTimeout.value"
       :initial-force-multi-agent="config.forceMultiAgent.value"
       :mode="mode.mode.value"
-      :task-mode="'off' as any"
+      :task-mode="config.taskMode.value as any"
       :temperature="temperature"
       :top-p="topP"
       :max-tokens="maxTokens"
@@ -814,7 +832,7 @@ function onNewSession() {
       @save-model="onSaveModel"
       @delete-model="onDeleteModel"
       @update:mode="onSelectMode"
-      @update:task-mode="() => notify('info', '任务模式在 Web IDE 暂未启用')"
+      @update:task-mode="(m: string) => { config.taskMode.value = m as any; send({ type: 'setTaskMode', mode: m } as any); notify('info', '任务模式在 Web IDE 暂未启用（选择已保存）') }"
       @update:temperature="(v: number) => (temperature = v)"
       @update:top-p="(v: number) => (topP = v)"
       @update:max-tokens="(v: number) => (maxTokens = v)"

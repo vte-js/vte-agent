@@ -27,6 +27,12 @@ export interface PersistedConfig {
   subAgentTimeout: number
   forceMultiAgent: boolean
   reasoningLevel: string
+  // Behavior / generation settings (persisted so "行为设置" survives a refresh)
+  mode: string
+  taskMode: string
+  temperature: number
+  topP: number
+  maxTokens: number
 }
 
 const DEFAULT_CONFIG: PersistedConfig = {
@@ -35,6 +41,11 @@ const DEFAULT_CONFIG: PersistedConfig = {
   subAgentTimeout: 300,
   forceMultiAgent: false,
   reasoningLevel: 'medium',
+  mode: 'code',
+  taskMode: 'off',
+  temperature: 0.7,
+  topP: 1,
+  maxTokens: 4096,
 }
 
 const CONFIG_DIR = '.vte'
@@ -80,7 +91,15 @@ export class ConfigPersistence {
   async updateModels(
     models: ModelProfile[],
     activeModelIndex: number,
-    extra?: { subAgentTimeout?: number; forceMultiAgent?: boolean },
+    extra?: {
+      subAgentTimeout?: number
+      forceMultiAgent?: boolean
+      mode?: string
+      taskMode?: string
+      temperature?: number
+      topP?: number
+      maxTokens?: number
+    },
   ): Promise<PersistedConfig> {
     const current = await this.load()
 
@@ -99,8 +118,36 @@ export class ConfigPersistence {
       subAgentTimeout: extra?.subAgentTimeout ?? current.subAgentTimeout,
       forceMultiAgent: extra?.forceMultiAgent ?? current.forceMultiAgent,
       reasoningLevel: current.reasoningLevel,
+      mode: extra?.mode ?? current.mode,
+      taskMode: extra?.taskMode ?? current.taskMode,
+      temperature: extra?.temperature ?? current.temperature,
+      topP: extra?.topP ?? current.topP,
+      maxTokens: extra?.maxTokens ?? current.maxTokens,
     }
 
+    await this.save(updated)
+    return updated
+  }
+
+  /**
+   * Merge-only update of the behavioral / generation settings (mode, taskMode,
+   * temperature, topP, maxTokens). Does NOT touch models or API keys.
+   * Used by the setMode / setTaskMode handlers and the 保存配置 button.
+   */
+  async updateBehavior(b: {
+    mode?: string
+    taskMode?: string
+    temperature?: number
+    topP?: number
+    maxTokens?: number
+  }): Promise<PersistedConfig> {
+    const current = await this.load()
+    const updated: PersistedConfig = { ...current }
+    if (b.mode != null) updated.mode = b.mode
+    if (b.taskMode != null) updated.taskMode = b.taskMode
+    if (b.temperature != null) updated.temperature = b.temperature
+    if (b.topP != null) updated.topP = b.topP
+    if (b.maxTokens != null) updated.maxTokens = b.maxTokens
     await this.save(updated)
     return updated
   }

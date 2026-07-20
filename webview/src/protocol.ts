@@ -26,7 +26,7 @@ export type WebviewToHostMessage =
   | { type: 'permissionResponse'; requestId: string; decision: 'allow_once' | 'always_allow' | 'deny' }
   | { type: 'clear' }
   | { type: 'getConfig' }
-  | { type: 'saveModels'; models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; activeModelIndex: number; subAgentTimeout?: number; forceMultiAgent?: boolean }
+  | { type: 'saveModels'; models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; activeModelIndex: number; subAgentTimeout?: number; forceMultiAgent?: boolean; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
   | { type: 'setMode'; mode: 'plan' | 'code' }
   | { type: 'setTaskMode'; taskMode: TaskMode }
   | { type: 'setReasoningLevel'; level: ReasoningLevel }
@@ -82,7 +82,7 @@ export type HostToWebviewMessage =
   | { type: 'filePickerResult'; files: ContextAttachment[] }
   | { type: 'gitData'; changes: string[]; commits: Array<{ hash: string; message: string }> }
   | { type: 'cleared' }
-  | { type: 'configData'; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; subAgentTimeout?: number; forceMultiAgent?: boolean }
+  | { type: 'configData'; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; subAgentTimeout?: number; forceMultiAgent?: boolean; reasoningLevel?: string; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
   | { type: 'configSaved' }
   | { type: 'showSettings' }
   | { type: 'modeChanged'; mode: 'plan' | 'code' }

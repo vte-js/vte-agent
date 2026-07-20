@@ -170,6 +170,11 @@ async function configData() {
     subAgentTimeout: c.subAgentTimeout,
     forceMultiAgent: c.forceMultiAgent,
     reasoningLevel: c.reasoningLevel,
+    mode: c.mode,
+    taskMode: c.taskMode,
+    temperature: c.temperature,
+    topP: c.topP,
+    maxTokens: c.maxTokens,
   }
 }
 
@@ -693,6 +698,11 @@ async function main(): Promise<void> {
   const ctx = new VTEContextManager(currentWorkspace)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, currentWorkspace)
   engine.setReasoningLevel((initConfig.reasoningLevel as any) || 'medium')
+  // Restore persisted behavioral settings onto the engine at boot, so a
+  // refreshed client that re-applies its saved mode/taskMode starts in
+  // the same state (no silent revert to defaults).
+  try { engine.setMode((initConfig.mode as any) || 'code') } catch { /* optional */ }
+  try { engine.setTaskMode((initConfig.taskMode as any) || 'off') } catch { /* optional */ }
   engine.onViewUpdate = (u) => emitUpdate(u)
 
   // 2b) Register the initial workspace in the global registry
@@ -874,7 +884,19 @@ async function main(): Promise<void> {
         break
 
       case 'setMode':
-        // engine.setMode exists but is optional here; ignored for now.
+        // Persist the chosen work mode so it survives a refresh, apply it to
+        // the engine, and broadcast it so every connected client stays in sync.
+        if (msg.mode) {
+          await (await activeConfigPersistence()).updateBehavior({ mode: msg.mode })
+          try { engine.setMode(msg.mode) } catch { /* engine may not implement */ }
+          post({ type: 'modeChanged', mode: msg.mode })
+        }
+        break
+      case 'setTaskMode':
+        if (msg.mode) {
+          await (await activeConfigPersistence()).updateBehavior({ taskMode: msg.mode })
+          try { engine.setTaskMode(msg.mode) } catch { /* engine may not implement */ }
+        }
         break
       case 'feedback':
         // No-op feedback sink for web-ide (VSCode host logs it).
@@ -914,9 +936,16 @@ async function main(): Promise<void> {
         // global alone was the root cause of "新增模型时保存无效": a workspace
         // that already had its own .vte/config.json kept returning that local
         // copy, so an add/edit saved to global was invisible on reload.
+        // ALSO persist every behavioral setting (mode / taskMode / sampling
+        // params) so the "行为设置 → 保存 → 刷新" round-trip keeps them.
         await (await activeConfigPersistence()).updateModels(msg.models, msg.activeModelIndex, {
           subAgentTimeout: msg.subAgentTimeout,
           forceMultiAgent: msg.forceMultiAgent,
+          mode: msg.mode,
+          taskMode: msg.taskMode,
+          temperature: msg.temperature,
+          topP: msg.topP,
+          maxTokens: msg.maxTokens,
         })
         post({ type: 'configSaved' })
         // Re-push updated configData with masked keys
@@ -1210,7 +1239,12 @@ async function main(): Promise<void> {
     console.log('[web-ide] client connected')
     adapter.messaging.bind(ws)
     // Send initial config + workspace list (async — reads from persistence)
-    void configData().then((data) => post(data))
+    void configData().then((data) => {
+      post(data)
+      // Re-apply the persisted work mode to the client (useMode defaults to
+      // 'code' on a fresh load, so without this the saved mode reverts).
+      post({ type: 'modeChanged', mode: data.mode })
+    })
     void pushWorkspaceList()
     ws.on('close', () => console.log('[web-ide] client disconnected'))
   })

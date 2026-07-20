@@ -48,7 +48,7 @@ export type ServerMessage =
   | { type: 'response'; text: string }
   | { type: 'error'; text: string }
   | { type: 'toast'; level: 'info' | 'success' | 'warning' | 'error'; text: string }
-  | { type: 'configData'; workspace?: string; models: Array<{ name: string; apiKey: string; apiBase: string; model: string }>; subAgentTimeout?: number; forceMultiAgent?: boolean }
+  | { type: 'configData'; workspace?: string; models: Array<{ name: string; apiKey: string; apiBase: string; model: string }>; subAgentTimeout?: number; forceMultiAgent?: boolean; reasoningLevel?: string; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
   | { type: 'cleared' }
   | StageFileTouch
   | StageFileModifying

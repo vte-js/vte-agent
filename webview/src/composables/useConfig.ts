@@ -59,6 +59,14 @@ export function useConfig() {
   const subAgentTimeout = ref(300)
   /** Force every chat message to use the multi-agent pipeline (host-agnostic config). */
   const forceMultiAgent = ref(false)
+  /** Work mode ('code' | 'plan') — restored from the host on connect. */
+  const mode = ref<'code' | 'plan'>('code')
+  /** Task-list mode ('off' | 'llm-auto' | 'plugin-auto'). */
+  const taskMode = ref<string>('off')
+  /** Generation sampling params (restored from the host on connect). */
+  const temperature = ref(0.7)
+  const topP = ref(1)
+  const maxTokens = ref(4096)
   let isConfigEditorInitializing = false
 
   watch(configEditorVisible, (v) => {
@@ -95,6 +103,11 @@ export function useConfig() {
       if (typeof msg.forceMultiAgent === 'boolean') {
         forceMultiAgent.value = msg.forceMultiAgent
       }
+      if (typeof msg.mode === 'string') mode.value = msg.mode as any
+      if (typeof msg.taskMode === 'string') taskMode.value = msg.taskMode
+      if (typeof msg.temperature === 'number') temperature.value = msg.temperature
+      if (typeof msg.topP === 'number') topP.value = msg.topP
+      if (typeof msg.maxTokens === 'number') maxTokens.value = msg.maxTokens
     } else if (msg.type === 'configSaved') {
       // handled by parent
     } else if (msg.type === 'showSettings') {
@@ -185,13 +198,29 @@ export function useConfig() {
     })
   }
 
-  function saveConfig() {
+  function saveConfig(cfg?: {
+    subAgentTimeout?: number
+    forceMultiAgent?: boolean
+    mode?: string
+    taskMode?: string
+    temperature?: number
+    topP?: number
+    maxTokens?: number
+  }) {
     send({
       type: 'saveModels',
       models: models.value,
       activeModelIndex: activeModelIndex.value,
-      subAgentTimeout: subAgentTimeout.value,
-      forceMultiAgent: forceMultiAgent.value,
+      // When the host passes the full behavior object (web-ide 保存配置
+      // button), persist EVERY setting so a refresh keeps them. Otherwise
+      // fall back to the live refs (VSCode path).
+      subAgentTimeout: cfg?.subAgentTimeout ?? subAgentTimeout.value,
+      forceMultiAgent: cfg?.forceMultiAgent ?? forceMultiAgent.value,
+      mode: cfg?.mode,
+      taskMode: cfg?.taskMode,
+      temperature: cfg?.temperature,
+      topP: cfg?.topP,
+      maxTokens: cfg?.maxTokens,
     })
   }
 
@@ -253,6 +282,7 @@ export function useConfig() {
     configVisible, configEditorVisible, models, activeModelIndex,
     apiKey, apiBase, model, permissionConfig, reasoningLevel,
     lspProfiles, lspConfigProfiles, subAgentTimeout, forceMultiAgent,
+    mode, taskMode, temperature, topP, maxTokens,
     toggleConfig, selectModel, addModel, updateModel, deleteModel, saveConfig, init,
     updatePermissionConfig, setReasoningLevel, setupLsp, testLsp,
     openConfigEditor, saveLspProfile, deleteLspProfile, addLspProfile,
