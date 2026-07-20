@@ -8,6 +8,12 @@
  *  - Scrolls to the FIRST changed line after setModel (not always line 1).
  *  - Basic syntax highlighting by file extension using monaco's lightweight
  *    built-in language modes (tokenizer-level only, no worker, no full LSP).
+ *
+ * Robustness fixes (post-M1 optimization):
+ *  - Teleport readiness: retry containerRef up to 5 times with nextTick.
+ *  - try/catch around every Monaco call so silent failures are surfaced.
+ *  - Fallback raw-text preview if Monaco fails to initialize.
+ *  - Console diagnostics for debugging blank-dock issues.
  */
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
@@ -33,6 +39,10 @@ const loading = ref(false)
 const editorReady = ref(false)
 const collapsed = ref(false)
 
+// ── Fallback state: if Monaco fails to init, show raw text instead ──
+const fallbackText = ref('')
+const monacoError = ref('')
+
 let editor: any = null
 let beforeModel: any = null
 let afterModel: any = null
@@ -43,7 +53,6 @@ let raf = 0
 let dragState: { sx: number; sy: number; ox: number; oy: number } | null = null
 function onDragStart(e: MouseEvent) {
   if (!(e.target instanceof HTMLElement)) return
-  // Only allow dragging from the header area.
   const hdr = e.target.closest('.md-header')
   if (!hdr || !dockRef.value) return
   e.preventDefault()
@@ -58,7 +67,6 @@ function onDragMove(e: MouseEvent) {
   const dy = e.clientY - dragState.sy
   let nx = dragState.ox + dx
   let ny = dragState.oy + dy
-  // Constrain to viewport.
   const w = dockRef.value.offsetWidth
   const h = dockRef.value.offsetHeight
   nx = Math.max(0, Math.min(window.innerWidth - w, nx))
@@ -119,58 +127,128 @@ function applyTheme(): void {
 }
 
 function disposeModels(): void {
-  if (beforeModel) { beforeModel.dispose(); beforeModel = null }
-  if (afterModel) { afterModel.dispose(); afterModel = null }
+  try {
+    if (beforeModel) { beforeModel.dispose(); beforeModel = null }
+    if (afterModel) { afterModel.dispose(); afterModel = null }
+  } catch (e) {
+    console.warn('[VTE-Stage] disposeModels error:', e)
+  }
 }
 
 /** Set diff content and scroll to the first changed line. */
 function updateDiff(d: { path: string; before: string; after: string }): void {
-  if (!editor) return
-  disposeModels()
+  if (!editor) {
+    // Monaco not ready — set fallback text
+    console.warn('[VTE-Stage] updateDiff called but editor is null — using fallback')
+    setFallback(d)
+    return
+  }
+
+  // Also update fallback in case user collapses and we need it
+  fallbackText.value = formatFallback(d)
+
+  try {
+    disposeModels()
+    fileName.value = d.path.split('/').pop() || d.path
+    filePath.value = d.path
+    const lang = langForPath(d.path)
+    beforeModel = monaco.editor.createModel(d.before || '', lang)
+    afterModel = monaco.editor.createModel(d.after || '', lang)
+    editor.setModel({ original: beforeModel, modified: afterModel })
+    console.log(`[VTE-Stage] Diff model set: ${fileName.value} (before=${d.before.length} chars, after=${d.after.length} chars)`)
+    // Scroll to first changed region instead of always line 1.
+    nextTick(() => {
+      try {
+        const changes = editor.getLineChanges?.()
+        if (changes && changes.length > 0) {
+          editor.revealLineInCenter(Math.max(1, changes[0].modifiedStartLineNumber))
+          return
+        }
+      } catch { /* fallback */ }
+      try { editor.revealLine(1) } catch {}
+    })
+  } catch (e) {
+    console.error('[VTE-Stage] updateDiff error:', e)
+    monacoError.value = String(e)
+    setFallback(d)
+  }
+}
+
+/** Raw-text fallback when Monaco fails. */
+function formatFallback(d: { path: string; before: string; after: string }): string {
+  const beforeLines = d.before.split('\n')
+  const afterLines = d.after.split('\n')
+  const maxLines = Math.max(beforeLines.length, afterLines.length)
+  let out = `/* ${d.path} */\n`
+  out += `─`.repeat(50) + ` BEFORE (${beforeLines.length} lines) ` + `─`.repeat(20) + '\n'
+  for (let i = 0; i < Math.min(beforeLines.length, 50); i++) {
+    out += (afterLines[i] !== beforeLines[i] ? '- ' : '  ') + beforeLines[i] + '\n'
+  }
+  if (beforeLines.length > 50) out += `  ... (${beforeLines.length - 50} more lines)\n`
+  out += `─`.repeat(50) + ` AFTER  (${afterLines.length} lines) ` + `─`.repeat(21) + '\n'
+  for (let i = 0; i < Math.min(afterLines.length, 50); i++) {
+    out += (afterLines[i] !== beforeLines[i] ? '+ ' : '  ') + afterLines[i] + '\n'
+  }
+  if (afterLines.length > 50) out += `  ... (${afterLines.length - 50} more lines)\n`
+  return out
+}
+function setFallback(d: { path: string; before: string; after: string }): void {
   fileName.value = d.path.split('/').pop() || d.path
   filePath.value = d.path
-  const lang = langForPath(d.path)
-  beforeModel = monaco.editor.createModel(d.before || '', lang)
-  afterModel = monaco.editor.createModel(d.after || '', lang)
-  editor.setModel({ original: beforeModel, modified: afterModel })
-  // Scroll to first changed region instead of always line 1.
-  nextTick(() => {
-    try {
-      const changes = editor.getLineChanges?.()
-      if (changes && changes.length > 0) {
-        editor.revealLineInCenter(Math.max(1, changes[0].modifiedStartLineNumber))
-        return
-      }
-    } catch { /* fallback */ }
-    editor.revealLine(1)
-  })
+  fallbackText.value = formatFallback(d)
+}
+
+/** Retry containerRef up to 5 times (Teleport may need time to materialize). */
+async function waitForContainer(maxRetries = 5): Promise<HTMLElement | null> {
+  for (let i = 0; i < maxRetries; i++) {
+    if (containerRef.value) return containerRef.value
+    await new Promise(r => setTimeout(r, 50 + i * 30)) // progressive backoff: 50, 80, 110, 140, 170ms
+  }
+  return containerRef.value // might still be null
 }
 
 async function initEditor(): Promise<void> {
-  if (!containerRef.value || editor) return
+  if (editor) return
+
+  const container = await waitForContainer()
+  if (!container) {
+    console.error('[VTE-Stage] containerRef is null after retries — Monaco cannot initialize')
+    monacoError.value = 'container_ref_null'
+    return
+  }
+
   loading.value = true
-  applyTheme()
-  editor = monaco.editor.createDiffEditor(containerRef.value, {
-    readOnly: true,
-    originalEditable: false,
-    renderSideBySide: true,
-    automaticLayout: true,
-    minimap: { enabled: false },
-    scrollBeyondLastLine: false,
-    fontSize: 12.5,
-    fontFamily: "'SF Mono', Monaco, Menlo, Consolas, monospace",
-    padding: { top: 8 },
-    folding: false,
-    matchBrackets: 'never',
-    occurrencesHighlight: 'off',
-    renderWhitespace: 'none',
-    wordWrap: 'off',
-    smoothScrolling: false,
-    cursorBlinking: 'solid',
-  })
-  editorReady.value = true
-  loading.value = false
-  if (props.diff) updateDiff(props.diff)
+  try {
+    applyTheme()
+    console.log(`[VTE-Stage] Creating DiffEditor in container (offsetWidth=${container.offsetWidth}, offsetHeight=${container.offsetHeight})...`)
+    editor = monaco.editor.createDiffEditor(container, {
+      readOnly: true,
+      originalEditable: false,
+      renderSideBySide: true,
+      automaticLayout: true,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      fontSize: 12.5,
+      fontFamily: "'SF Mono', Monaco, Menlo, Consolas, monospace",
+      padding: { top: 8 },
+      folding: false,
+      matchBrackets: 'never',
+      occurrencesHighlight: 'off',
+      renderWhitespace: 'none',
+      wordWrap: 'off',
+      smoothScrolling: false,
+      cursorBlinking: 'solid',
+    })
+    editorReady.value = true
+    loading.value = false
+    console.log(`[VTE-Stage] DiffEditor created OK`)
+    if (props.diff) updateDiff(props.diff)
+  } catch (e) {
+    console.error('[VTE-Stage] createDiffEditor failed:', e)
+    loading.value = false
+    monacoError.value = String(e instanceof Error ? e.message : e)
+    if (props.diff) setFallback(props.diff)
+  }
 }
 
 // Coalesce bursts of writes into a single update per animation frame.
@@ -182,7 +260,8 @@ watch(
     if (raf) cancelAnimationFrame(raf)
     raf = requestAnimationFrame(() => {
       raf = 0
-      if (editorReady.value) updateDiff(d)
+      if (editorReady.value && !monacoError.value) updateDiff(d)
+      else if (monacoError.value) setFallback(d)
       else pendingDiff = d
     })
   },
@@ -192,15 +271,18 @@ watch(
 onMounted(async () => {
   await nextTick()
   await initEditor()
-  if (pendingDiff) {
+  if (pendingDiff && !monacoError.value) {
     updateDiff(pendingDiff)
+    pendingDiff = null
+  } else if (pendingDiff && monacoError.value) {
+    setFallback(pendingDiff)
     pendingDiff = null
   }
 })
 
 onBeforeUnmount(() => {
   disposeModels()
-  if (editor) { editor.dispose(); editor = null }
+  if (editor) { try { editor.dispose() } catch {} editor = null }
   if (raf) cancelAnimationFrame(raf)
 })
 </script>
@@ -222,7 +304,8 @@ onBeforeUnmount(() => {
           </svg>
           <span class="md-fname">{{ fileName || '—' }}</span>
           <span class="md-path" :title="filePath">{{ filePath }}</span>
-          <span class="md-badge">实时改动</span>
+          <span v-if="!monacoError" class="md-badge">实时改动</span>
+          <span v-else class="md-badge md-badge-warn">渲染异常</span>
         </div>
         <div class="md-actions">
           <button class="md-btn" :title="collapsed ? '展开' : '折叠'" @click.stop="collapsed = !collapsed">
@@ -234,8 +317,13 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+      <!-- Monaco editor area -->
       <div v-show="!collapsed" ref="containerRef" class="md-editor">
         <div v-if="loading" class="md-loading">正在加载编辑器…</div>
+      </div>
+      <!-- Fallback: raw text when Monaco fails -->
+      <div v-show="!collapsed && monacoError" class="md-fallback">
+        <pre class="md-fallback-text">{{ fallbackText }}</pre>
       </div>
       <!-- Mini bar when collapsed -->
       <div v-if="collapsed" class="md-collapsed-bar">
@@ -263,14 +351,12 @@ onBeforeUnmount(() => {
     0 0 0 1px rgba(255,255,255,0.04);
   z-index: 999;
   overflow: hidden;
-  /* Smooth appear animation */
   animation: dock-in 0.2s ease-out both;
 }
 @keyframes dock-in {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-/* Collapsed state: just a slim bar */
 .monaco-dock-float.collapsed {
   max-height: auto;
   width: 340px;
@@ -315,6 +401,10 @@ onBeforeUnmount(() => {
   background: var(--vte-primary-muted, rgba(99,102,241,0.15));
   white-space: nowrap;
 }
+.md-badge-warn {
+  color: var(--vte-error, #f48771);
+  background: rgba(244,135,113,0.15);
+}
 
 .md-actions {
   display: flex;
@@ -343,7 +433,7 @@ onBeforeUnmount(() => {
 }
 .md-close:hover { background: rgba(255,255,255,0.07); color: var(--vte-error, #f48771); }
 
-.md-editor { position: relative; flex: 1 1 auto; min-height: 140px; max-height: calc(min(420px, 100vh - 210px)); overflow: hidden; }
+.md-editor { position: relative; flex: 1 1 auto; min-height: 140px; max-height: calc(min(420px, calc(100vh - 210px))); overflow: hidden; }
 .md-loading {
   position: absolute;
   inset: 0;
@@ -353,6 +443,25 @@ onBeforeUnmount(() => {
   color: var(--vte-text-muted, #999);
   font-size: 12px;
 }
+
+/* Fallback raw-text display when Monaco fails */
+.md-fallback {
+  flex: 1 1 auto;
+  min-height: 140px;
+  max-height: calc(min(420px, calc(100vh - 210px)));
+  overflow: auto;
+  background: var(--vte-bg, #1e1e1e);
+}
+.md-fallback-text {
+  margin: 8px 12px;
+  font-size: 11.5px;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+  color: var(--vte-text, #ccc);
+  white-space: pre;
+  tab-size: 2;
+  line-height: 1.45;
+}
+/* Highlight changed lines in fallback */
 .md-collapsed-bar {
   display: flex;
   align-items: center;

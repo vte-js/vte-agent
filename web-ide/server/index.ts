@@ -283,13 +283,16 @@ function deriveStageFileTouch(u: any): void {
     const p = resolveWsPath(String(args.path || ''))
     if (!p) return
     // ① Immediately signal "modifying" so the file tree shows a live spinner.
+    //    Do NOT send stage:file_touch yet — that would immediately overwrite the
+    //    spinner with a highlight.  We defer touch until tool_result arrives so
+    //    the user actually sees the "modifying" state (especially important for
+    //    fast sub-100ms edits where otherwise the flash is imperceptible).
     post({ type: 'stage:file_modifying', ts: Date.now(), agentId: 'main', path: p, op: name === 'write' ? 'write' : 'edit' })
     // Read the CURRENT file content now (before the tool executes) so we
     // have a real "before" to diff against once the write lands.
     let before = ''
     try { before = fs.readFileSync(p, 'utf-8') } catch { /* new file: nothing to diff against */ }
     pendingWrites.set(u.toolCallId, { path: p, before })
-    post({ type: 'stage:file_touch', ts: Date.now(), agentId: 'main', path: p, op: name === 'write' ? 'write' : 'edit' })
   }
   // 'list' and other tools do not touch a single highlightable file.
 }
@@ -301,6 +304,9 @@ function flushStageFileWrite(u: any): void {
   // The file has now been written — read it back as the "after".
   let after = ''
   try { after = fs.readFileSync(pending.path, 'utf-8') } catch { /* removed right after write */ }
+  // Send touch NOW (not in deriveStageFileTouch) so "modifying" has time to show.
+  post({ type: 'stage:file_touch', ts: Date.now(), agentId: 'main', path: pending.path, op: 'write' })
+  // Send diff data for Monaco dock.
   post({
     type: 'stage:file_write_done',
     ts: Date.now(),
