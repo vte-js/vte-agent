@@ -35,7 +35,7 @@ import {
   ThinkingStyle,
   ApiProtocol,
 } from '../core/types';
-import { inferCapability, isOpenAIReasoningModel } from './model-catalog';
+import { inferCapability, isOpenAIReasoningModel, resolveFamily, resolveThinkingStyleForModel } from './model-catalog';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Reasoning mapping (absorbed from the former reasoning.ts)
@@ -92,22 +92,15 @@ export function resolveApiProtocol(
 }
 
 /**
- * Resolve an 'auto' thinking style into a concrete one, using the model name
- * and the wire protocol.
+ * Resolve an 'auto' thinking style into a concrete one.
+ * Delegates entirely to model-catalog — no hardcoded model patterns here.
  */
 function resolveThinkingStyle(
   style: ThinkingStyle,
   model: string,
   protocol: ApiProtocol
 ): Exclude<ThinkingStyle, 'auto'> {
-  if (style !== 'auto') return style;
-  const m = model.toLowerCase();
-  // Responses API only exists for OpenAI-style reasoning backends.
-  if (protocol === 'responses') return 'openai';
-  if (isOpenAIReasoningModel(m)) return 'openai';
-  if (/qwen|mimo|deepseek|glm|kimi|ernie|hunyuan/.test(m)) return 'qwen';
-  if (/claude/.test(m)) return 'anthropic';
-  return 'none';
+  return resolveThinkingStyleForModel(style, model, protocol);
 }
 
 /**
@@ -197,28 +190,11 @@ function clampMaxTokens(requested: number | undefined, capMax: number): number {
  * Resolve which provider family a model belongs to. This drives field naming
  * + constraint gating. `apiBase` helps disambiguate vendors that share the
  * OpenAI wire format (e.g. Gemini's OpenAI-compatible endpoint, Anthropic
- * on Bedrock). `auto` is the default and the only value the runtime needs —
- * explicit families are inferred, never user-set, matching Cline's design
- * where the provider is derived from the configured endpoint + model id.
+ * on Bedrock). Delegates to model-catalog — the single source of family
+ * knowledge — so this module has ZERO hardcoded model patterns.
  */
 export function resolveProviderFamily(model: string, apiBase?: string): ProviderFamily {
-  const m = model.toLowerCase();
-  const base = (apiBase || '').toLowerCase();
-
-  // Gemini: native or AI Studio / Vertex OpenAI-compatible path.
-  if (/gemini/.test(m) || /generativelanguage\.googleapis|ai\.googleapis\.com|vertex/.test(base)) {
-    return 'gemini';
-  }
-  // Anthropic: Claude native Messages API or Bedrock.
-  if (/claude/.test(m) || /anthropic|bedrock/.test(base)) {
-    return 'anthropic';
-  }
-  // Qwen-family thinking switch (OpenAI-compatible but needs enable_thinking).
-  if (/(qwen|mimo|deepseek|glm|kimi|moonshot|ernie|hunyuan)/.test(m)) {
-    return 'qwen';
-  }
-  // Everything else: OpenAI + every OpenAI-compatible gateway.
-  return 'openai';
+  return resolveFamily(model, apiBase);
 }
 
 /**

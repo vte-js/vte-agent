@@ -25,6 +25,10 @@
 
 import { AgentMessage } from '../core/types';
 
+// Re-export: single source of truth lives in model-catalog. This re-export
+// keeps existing imports (engine.ts) working without changes.
+export { inferContextWindow } from './model-catalog';
+
 export interface CompactionOptions {
   /** Effective model input window in tokens (net of any system overhead). */
   contextWindow: number;
@@ -65,25 +69,6 @@ export const CHECKPOINT_PREFIX = '[Context Checkpoint:';
 export function estimateTokens(text: string, charsPerToken = 4): number {
   if (!text) return 0;
   return Math.max(1, Math.ceil(text.length / charsPerToken));
-}
-
-/**
- * Infer a model's effective input window from its name. Future-proof: as
- * vendors ship larger windows, add a clause here (or pass an explicit
- * `contextWindow` through the engine — that always wins).
- */
-export function inferContextWindow(model: string): number {
-  const m = (model || '').toLowerCase();
-  if (m.includes('1m') || m.includes('1_000_000')) return 1_000_000;
-  if (m.includes('gpt-5')) return 400_000;
-  if (m.includes('gpt-4.1') || m.includes('gpt-4o') || m.includes('gpt-4.5')) return 200_000;
-  if (m.includes('gpt-4')) return 128_000;
-  if (m.includes('claude') && (m.includes('sonnet-4') || m.includes('opus-4'))) return 200_000;
-  if (m.includes('claude')) return 200_000;
-  if (m.includes('gemini')) return 1_000_000;
-  if (m.includes('qwen')) return 256_000;
-  if (m.includes('deepseek') || m.includes('glm')) return 128_000;
-  return 128_000;
 }
 
 export interface CompactionPlan {
