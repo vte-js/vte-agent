@@ -396,10 +396,19 @@ function onStop() {
   chat.stop()
 }
 
-function onSaveConfig(cfg: { subAgentTimeout?: number; forceMultiAgent?: boolean }) {
+function onSaveConfig(cfg: { subAgentTimeout?: number; forceMultiAgent?: boolean; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }) {
   if (cfg.subAgentTimeout != null) config.subAgentTimeout.value = cfg.subAgentTimeout
   if (cfg.forceMultiAgent != null) config.forceMultiAgent.value = cfg.forceMultiAgent
-  config.saveConfig()
+  // Forward EVERY behavior / sampling field to saveConfig() so the 保存
+  // button round-trips mode / taskMode / temperature / topP / maxTokens.
+  // Previously cfg was dropped here, so only subAgentTimeout + forceMultiAgent
+  // were persisted and the rest reverted to defaults on reload.
+  if (cfg.mode != null) config.mode.value = cfg.mode as any
+  if (cfg.taskMode != null) config.taskMode.value = cfg.taskMode as any
+  if (cfg.temperature != null) config.temperature.value = cfg.temperature
+  if (cfg.topP != null) config.topP.value = cfg.topP
+  if (cfg.maxTokens != null) config.maxTokens.value = cfg.maxTokens
+  config.saveConfig(cfg)
 }
 
 function onSaveModel(index: number, profile: { name: string; apiKey: string; apiBase: string; model: string }) {

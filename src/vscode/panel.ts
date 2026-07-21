@@ -37,6 +37,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private sessionManager?: SessionManager;
   private currentSessionId?: string;
   private mode: AgentMode = 'code';
+  /** Persisted host-agnostic behavior / sampling settings. Stored in
+   *  globalState (NOT the native settings schema) so they survive a
+   *  webview reload. Previously these were either never persisted or
+   *  only held in memory, so every setting under 行为/高级 reverted
+   *  to defaults on refresh. */
+  private taskMode: string = 'off';
+  private temperature: number = 0.7;
+  private topP: number = 1;
+  private maxTokens: number = 4096;
   private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
   /** Sub-agent work-order timeout in seconds (host-agnostic config, surfaced in our own ConfigPanel, not VSCode native settings). */
   private subAgentTimeout = 300;
@@ -114,6 +123,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // on first run). These values are NOT read from settings.json anymore.
     this.subAgentTimeout = this.globalState.get<number>('vte.subAgentTimeout', 300)
     this.forceMultiAgent = this.globalState.get<boolean>('vte.forceMultiAgent', false)
+    // Restore the rest of the behavior / sampling settings so a refreshed
+    // webview re-seeds its local refs from these instead of defaults.
+    this.mode = (this.globalState.get<AgentMode>('vte.mode', 'code')) || 'code'
+    this.taskMode = this.globalState.get<string>('vte.taskMode', 'off')
+    this.temperature = this.globalState.get<number>('vte.temperature', 0.7)
+    this.topP = this.globalState.get<number>('vte.topP', 1)
+    this.maxTokens = this.globalState.get<number>('vte.maxTokens', 4096)
   }
 
 
@@ -230,7 +246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           log('History cleared');
           break;
         case 'saveModels':
-          await this.saveModels(message.models, message.activeModelIndex, message.subAgentTimeout, message.forceMultiAgent);
+          await this.saveModels(message.models, message.activeModelIndex, message.subAgentTimeout, message.forceMultiAgent, message.mode, message.taskMode, message.temperature, message.topP, message.maxTokens);
           break;
         case 'switchModel':
           await this.switchModel(message.index);
@@ -240,10 +256,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'setMode':
           this.mode = message.mode;
+          await this.globalState.update('vte.mode', message.mode);
           this.engine?.setMode(message.mode);
           log(`Mode changed to: ${message.mode}`);
           break;
         case 'setTaskMode':
+          this.taskMode = message.taskMode;
+          await this.globalState.update('vte.taskMode', message.taskMode);
           this.engine?.setTaskMode(message.taskMode);
           log(`Task mode changed to: ${message.taskMode}`);
           break;
@@ -1420,23 +1439,42 @@ Example usage here
     }
   }
 
-  private async saveModels(models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>, activeModelIndex: number, subAgentTimeout?: number, forceMultiAgent?: boolean) {
+  private async saveModels(models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>, activeModelIndex: number, subAgentTimeout?: number, forceMultiAgent?: boolean, mode?: string, taskMode?: string, temperature?: number, topP?: number, maxTokens?: number) {
     const config = vscode.workspace.getConfiguration('vteCode');
     await config.update('models', models, vscode.ConfigurationTarget.Global);
     await config.update('activeModelIndex', activeModelIndex, vscode.ConfigurationTarget.Global);
-    // Persist host-agnostic config (sub-agent timeout). It lives in our
-    // own config bucket, NOT in the native settings schema, so it never
-    // shows in the VSCode Settings UI — other hosts persist it elsewhere.
+    // Persist host-agnostic config. It lives in our own globalState
+    // bucket, NOT in the native settings schema, so writes never get
+    // silently dropped (and never show in the VSCode Settings UI).
     if (typeof subAgentTimeout === 'number') {
       this.subAgentTimeout = subAgentTimeout;
-      // globalState.update() is reliable (no schema requirement), unlike
-      // vscode.workspace.getConfiguration().update() which silently drops
-      // writes for keys not declared in package.json.
       await this.globalState.update('vte.subAgentTimeout', subAgentTimeout);
     }
     if (typeof forceMultiAgent === 'boolean') {
       this.forceMultiAgent = forceMultiAgent;
       await this.globalState.update('vte.forceMultiAgent', forceMultiAgent);
+    }
+    // Behavior + sampling settings (行为 / 高级 tabs). These MUST be
+    // persisted too, otherwise a webview reload resets them to defaults.
+    if (typeof mode === 'string') {
+      this.mode = mode as AgentMode;
+      await this.globalState.update('vte.mode', mode);
+    }
+    if (typeof taskMode === 'string') {
+      this.taskMode = taskMode;
+      await this.globalState.update('vte.taskMode', taskMode);
+    }
+    if (typeof temperature === 'number') {
+      this.temperature = temperature;
+      await this.globalState.update('vte.temperature', temperature);
+    }
+    if (typeof topP === 'number') {
+      this.topP = topP;
+      await this.globalState.update('vte.topP', topP);
+    }
+    if (typeof maxTokens === 'number') {
+      this.maxTokens = maxTokens;
+      await this.globalState.update('vte.maxTokens', maxTokens);
     }
 
     this.engine = undefined;
@@ -1766,6 +1804,11 @@ Example usage here
       activeModelIndex: activeModelIndex,
       subAgentTimeout: this.subAgentTimeout,
       forceMultiAgent: this.forceMultiAgent,
+      mode: this.mode,
+      taskMode: this.taskMode,
+      temperature: this.temperature,
+      topP: this.topP,
+      maxTokens: this.maxTokens,
     });
     log(`Config sent: ${models.length} model profiles`);
   }
