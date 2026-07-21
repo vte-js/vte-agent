@@ -660,6 +660,8 @@ async function switchWorkspace(newPath: string): Promise<void> {
   const ctx = new VTEContextManager(resolved)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, resolved)
   engine.setReasoningLevel((swConfig.reasoningLevel as any) || 'medium')
+  // Model-aware context window: explicit profile value wins, else engine infers from model name.
+  engine.setContextWindow(swActive?.contextWindow)
   engine.onViewUpdate = (u) => emitUpdate(u)
 
   // 5) Notify the client
@@ -704,6 +706,8 @@ async function main(): Promise<void> {
   const ctx = new VTEContextManager(currentWorkspace)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, currentWorkspace)
   engine.setReasoningLevel((initConfig.reasoningLevel as any) || 'medium')
+  // Model-aware context window: explicit profile value wins, else engine infers from model name.
+  engine.setContextWindow(initActive?.contextWindow)
   // Restore persisted behavioral settings onto the engine at boot, so a
   // refreshed client that re-applies its saved mode/taskMode starts in
   // the same state (no silent revert to defaults).

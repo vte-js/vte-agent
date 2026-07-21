@@ -33,6 +33,13 @@ import { recordUsage, getSessionStats, getRecentRecords } from './token-tracker'
 import { PermissionConfig, DEFAULT_PERMISSION_CONFIG, getPermissionLevel, TOOL_CATEGORIES } from '../core/permissions';
 import { buildChatReasoningParams } from './reasoning';
 import { callResponsesAPI } from './responses-client';
+import {
+  compactMessages,
+  DEFAULT_COMPACTION,
+  CHECKPOINT_PREFIX,
+  inferContextWindow,
+  type CompactionOptions,
+} from './context-compaction';
 
 export type AgentMode = 'plan' | 'code';
 
@@ -54,9 +61,12 @@ export class AgentEngine {
   private tokenBudget: TokenBudget;
   private workspaceRoot: string;
   private shadowGit: ShadowGit;
-  // Context management: keep only recent messages, summarize old ones
-  private readonly MAX_HISTORY_MESSAGES = 40;
-  private readonly MAX_TOOL_RESULT_CHARS = 2000;
+  // Context management: layered, token-budget-driven, model-aware compaction.
+  // Replaces the old fixed-count `MAX_HISTORY_MESSAGES`. See context-compaction.ts.
+  private contextWindow: number;
+  private compaction: CompactionOptions;
+  /** Rolling "handoff" checkpoint text, folded forward by Layer 2. */
+  private _checkpoint?: string;
   onViewUpdate?: (update: Record<string, unknown>) => void;
   private permissionConfig: PermissionConfig = { ...DEFAULT_PERMISSION_CONFIG };
   private pendingPermissionResolve?: (decision: 'allow_once' | 'always_allow' | 'deny') => void;
@@ -91,8 +101,11 @@ export class AgentEngine {
    * <system-reminder> nudge telling it to reuse the context it already
    * has instead of re-reading. This is the main fix for "a simple edit
    * like 修改 test.ts makes the LLM call the tool chain over and over":
-   * once history trimming evicts an earlier read result (MAX_HISTORY_MESSAGES),
-   * the model loses the file content and re-reads it, which pushes more
+   * once context compaction evicts an earlier read result, the model
+   * loses the file content and re-reads it — Layer 1 pruning keeps the
+   * (tool_call ↔ result) pair so re-reads are cheap, and a wider
+   * model-aware window delays eviction in the first place. A soft nudge
+   * (not a hard block) is enough to break it without losing legitimate
    * messages, which trims again → a re-read thrash loop. A soft nudge
    * (not a hard block) is enough to break it without losing legitimate
    * re-reads (cleared below when the file is actually mutated). */
@@ -109,14 +122,19 @@ export class AgentEngine {
     model: string = 'gpt-4',
     apiKey: string = '',
     apiBase: string = 'https://api.openai.com/v1',
-    workspaceRoot: string = ''
+    workspaceRoot: string = '',
+    contextWindow?: number
   ) {
     this.context = context;
     this.model = model;
     this.apiKey = apiKey;
     this.apiBase = apiBase;
     this.workspaceRoot = workspaceRoot;
-    this.tokenBudget = createTokenBudget();
+    // Model-aware effective window: explicit wins, else infer from name.
+    // Auto-scales as vendors ship larger contexts — no magic count to retune.
+    this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : inferContextWindow(model);
+    this.compaction = { ...DEFAULT_COMPACTION, contextWindow: this.contextWindow };
+    this.tokenBudget = createTokenBudget(Math.max(8000, this.contextWindow - 8192), 8192);
     this.shadowGit = new ShadowGit(workspaceRoot);
     this.shadowGit.init();
     // Set checkpoint context for checkpoint tools
@@ -230,6 +248,19 @@ export class AgentEngine {
     this.resolveQuestion('', '__back__');
   }
 
+  /**
+   * Override the model's effective context window at runtime (e.g. when the
+   * host knows the exact window for the selected model). Re-derives the
+   * token budget and compaction knobs so everything stays model-aware.
+   */
+  setContextWindow(n?: number): void {
+    if (n && n > 0) {
+      this.contextWindow = n;
+      this.compaction = { ...this.compaction, contextWindow: n };
+      this.tokenBudget = createTokenBudget(Math.max(8000, n - 8192), 8192);
+    }
+  }
+
   // ── Reasoning Level ──
 
   private reasoningLevel: ReasoningLevel = 'medium';
@@ -307,65 +338,115 @@ export class AgentEngine {
     return this.thinkingStyle;
   }
 
-  // ── Context Management (token-efficient, inspired by OpenCode) ──
+  // ── Context Management (layered, token-budget-driven, model-aware) ──
 
   /**
-   * Trim message history to stay within token budget.
-   * Keeps: first user message (context) + last N messages + all tool calls in current turn.
-   */
-  /**
-   * Trim old messages to keep token usage bounded.
+   * Context compaction — layered, token-budget-driven, model-aware.
+   * Replaces the old fixed-count `trimHistory()`. Order of escalating cost:
+   *   Layer 1 (cheap, no LLM): pair-safe tool-result pruning — keep the
+   *     assistant `tool_call` AND the `tool` result message, but shrink the
+   *     result BODY to a placeholder ("selective amnesia", à la Claude Code).
+   *     Never breaks a (tool_call ↔ tool_result) pair.
+   *   Layer 2 (LLM): when pruning alone can't fit the budget and
+   *     `strategy === 'summarize'`, fold the evicted middle into a ROLLING
+   *     checkpoint (preserving prior decisions, à la Codex handoff /
+   *     OpenCode step-2) and replace the middle with one `system` message.
+   *   Layer 3 (fallback): pair-safe hard truncation if still over the hard cap.
+   *
+   * Triggering is TOKEN-based against the model's effective window
+   * (`contextWindow - completionBuffer`), so it auto-scales as models ship
+   * larger contexts — no magic message count to retune.
    *
    * CRITICAL: the Responses API requires every `function_call_output` to have a
-   * matching `function_call` (same call_id) inside the same `input`. We must
-   * therefore never split an (assistant function_call ↔ tool result) pair across
-   * the trim boundary — otherwise the next request fails with
-   * "No tool call found for function call output with callId ...".
-   *
-   * Keeps: first message (initial context) + last N messages, but slides the
-   * window so it never begins on an orphaned tool result and never ends on a
-   * dangling assistant function_call (whose outputs fell outside the window).
+   * matching `function_call` (same call_id). Every layer here preserves
+   * (tool_call ↔ tool_result) pairs — pruning only clears a result BODY while
+   * keeping both messages; truncation drops complete call→result groups.
    */
-  private trimHistory(): void {
-    if (this.messages.length <= this.MAX_HISTORY_MESSAGES) return;
+  private async manageContext(): Promise<void> {
+    const plan = compactMessages(this.messages, this.compaction, this._checkpoint);
 
-    const N = this.MAX_HISTORY_MESSAGES;
-
-    // Keep first message only if it is not itself an orphaned tool result.
-    const head = this.messages[0].role === 'tool' ? [] : [this.messages[0]];
-
-    // Slide the window start forward past any orphaned tool messages (their
-    // paired assistant function_call was trimmed away).
-    let start = this.messages.length - N;
-    if (start < 1) start = 1;
-    while (start < this.messages.length && this.messages[start].role === 'tool') {
-      start++;
-    }
-
-    // Slide the window end backward to drop dangling assistant function_calls
-    // (their tool results landed outside the window).
-    let end = this.messages.length;
-    while (end > start) {
-      const m = this.messages[end - 1];
-      const hasToolCalls = !!m.toolCalls && m.toolCalls.length > 0;
-      if (m.role === 'assistant' && hasToolCalls) {
-        end--;
-      } else {
-        break;
+    if (!plan.needsSummary) {
+      this.messages = plan.messages;
+      if (plan.prunedTokens > 0 || plan.truncated) {
+        console.log(`[VTE][Compaction] pruned≈${plan.prunedTokens}t truncated=${plan.truncated} est≈${plan.estimatedTokens}t`);
       }
+      return;
     }
 
-    const recent = this.messages.slice(start, end);
-    const trimmedCount = this.messages.length - recent.length - head.length;
-    const snapshot = this.context.getSnapshot();
-    const filesRead = Array.from(snapshot.readFiles).slice(-5).join(', ') || 'none';
-    const summary: AgentMessage = {
-      role: 'system',
-      content: `[Context: ${trimmedCount} earlier messages trimmed to save tokens. Key files read: ${filesRead}]`,
-    };
+    // Layer 2: rolling checkpoint via a one-shot, non-streaming LLM call.
+    let summary: string | null = null;
+    try {
+      summary = await this.summarizeForCompaction(plan.evictable, this._checkpoint);
+    } catch (e) {
+      console.warn('[VTE][Compaction] summarize failed, keeping pruned history', e);
+    }
 
-    this.messages = [...head, summary, ...recent];
-    console.log(`[VTE] Trimmed history: ${trimmedCount} messages removed`);
+    if (summary && summary.trim().length > 0) {
+      this._checkpoint = summary.trim();
+      const head = plan.head;
+      const tail = plan.messages.slice(plan.protectedStart);
+      this.messages = [...head, { role: 'system', content: `${CHECKPOINT_PREFIX} ${this._checkpoint}]` }, ...tail];
+      console.log(`[VTE][Compaction] summarized est≈${plan.estimatedTokens}t`);
+    } else {
+      this.messages = plan.messages; // graceful fallback to prune-only
+    }
+  }
+
+  /**
+   * One-shot, non-streaming LLM call used ONLY for compaction summaries.
+   * Reuses the active protocol/endpoint but sends NO tools and a tiny
+   * max-tokens budget, so it's cheap and can't disturb the main loop.
+   */
+  private async oneShotLLM(system: string, user: string, maxTokens: number): Promise<string | null> {
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` };
+    const signal = this.abortController?.signal;
+    try {
+      if (this.apiProtocol === 'responses') {
+        const body = {
+          model: this.model,
+          instructions: system,
+          input: [{ role: 'user', content: user }],
+          max_output_tokens: maxTokens,
+          stream: false,
+        };
+        const r = await fetch(`${this.apiBase}/responses`, { method: 'POST', headers, body: JSON.stringify(body), signal });
+        const data: any = await r.json();
+        if (data?.output_text) return String(data.output_text);
+        if (Array.isArray(data?.output)) {
+          const t = data.output.map((o: any) => o?.text ?? (typeof o?.content === 'string' ? o.content : '')).join('\n');
+          if (t) return t;
+        }
+        return null;
+      }
+      const body = {
+        model: this.model,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        max_tokens: maxTokens,
+        temperature: 0.2,
+        stream: false,
+      };
+      const r = await fetch(`${this.apiBase}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal });
+      const data: any = await r.json();
+      return data?.choices?.[0]?.message?.content ?? null;
+    } catch (e) {
+      console.warn('[VTE][Compaction] oneShotLLM error', e);
+      return null;
+    }
+  }
+
+  /** Build a structured "handoff" summary of the evicted middle for Layer 2. */
+  private async summarizeForCompaction(oldMessages: AgentMessage[], existing?: string): Promise<string | null> {
+    const transcript = oldMessages
+      .map((m) => {
+        const who = m.role === 'tool' ? `tool(${m.tool_call_id ?? '?'})` : m.role;
+        const body = (typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).slice(0, 1500);
+        return `[${who}] ${body}`;
+      })
+      .join('\n');
+
+    const system = `你是上下文压缩器。把下面将被裁剪的对话历史压缩成一份"工作交接单"，供接续任务的模型直接使用。必须保留：1)用户原始意图与目标；2)关键架构决策与约束(如禁止改动的文件/接口形状)；3)已修改的文件路径及改动意图；4)已完成事项；5)剩余待办；6)最近有用的发现(报错信息、测试命令)。用简洁中文，直接引用关键文件名/命令，不要改写原意。若提供了[已有检查点]，必须在其基础上折叠新信息(保留旧决策，追加新进展)，不得丢弃旧约束。`;
+    const user = (existing ? `[已有检查点]\n${existing}\n\n` : '') + `[待压缩历史]\n${transcript}`;
+    return this.oneShotLLM(system, user, 1500);
   }
 
   /**
@@ -373,9 +454,9 @@ export class AgentEngine {
    */
   private compressToolResults(results: ToolResult[]): ToolResult[] {
     return results.map(r => {
-      if (r.content.length > this.MAX_TOOL_RESULT_CHARS) {
-        const truncated = r.content.slice(0, this.MAX_TOOL_RESULT_CHARS);
-        const omitted = r.content.length - this.MAX_TOOL_RESULT_CHARS;
+      if (r.content.length > this.compaction.maxToolResultChars) {
+        const truncated = r.content.slice(0, this.compaction.maxToolResultChars);
+        const omitted = r.content.length - this.compaction.maxToolResultChars;
         return {
           ...r,
           content: `${truncated}\n\n[... ${omitted} chars omitted to save tokens]`,
@@ -524,8 +605,8 @@ export class AgentEngine {
 
     const systemContent = this.buildSystemPromptWithTemplate(customInstructions || undefined);
 
-    // Trim history to save tokens (keep recent messages, summarize old ones)
-    this.trimHistory();
+    // Layered, token-budget-driven context compaction (see context-compaction.ts)
+    await this.manageContext();
 
     // Signal new thinking phase to webview
     this.onViewUpdate?.({ type: 'thinking_start' });
@@ -1182,6 +1263,7 @@ export class AgentEngine {
     this._consecutiveQuestionCalls = 0;
     this._clarifyRounds = 0;
     this._explored.clear();
+    this._checkpoint = undefined;
   }
 
   /**

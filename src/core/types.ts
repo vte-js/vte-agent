@@ -152,6 +152,13 @@ export interface ModelProfile {
   api?: ApiProtocol
   /** How this backend expresses thinking. Defaults to 'auto'. */
   thinkingStyle?: ThinkingStyle
+  /**
+   * Explicit effective context window (tokens). When set, the engine uses
+   * it directly for token-budget compaction; otherwise it is inferred from
+   * the model name. Lets hosts declare larger windows as vendors ship
+   * them, without waiting for an inference-rule update.
+   */
+  contextWindow?: number
 }
 
 // ── LLM Types ──

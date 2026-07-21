@@ -1252,7 +1252,7 @@ Example usage here
 
         // Apply API protocol + thinking style from the active model profile.
         // Falls back to 'chat' + 'auto' (style is inferred from the model name).
-        const profiles = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' }>>('models', []);
+        const profiles = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'; contextWindow?: number }>>('models', []);
         const activeIdx = config.get<number>('activeModelIndex', 0);
         const activeProfile = profiles[activeIdx];
         // Smart-default the protocol when the profile doesn't set `api`:
@@ -1263,6 +1263,8 @@ Example usage here
         const resolvedProtocol = resolveApiProtocol(activeProfile?.api, resolvedModel, resolvedBase);
         this.engine.setApiProtocol(resolvedProtocol);
         this.engine.setThinkingStyle(activeProfile?.thinkingStyle || 'auto');
+        // Model-aware context window: explicit profile value wins, else engine infers from model name.
+        this.engine.setContextWindow(activeProfile?.contextWindow);
         log(`[DEBUG] Engine created: protocol=${resolvedProtocol}${activeProfile?.api ? '' : ' (auto)'} thinkingStyle=${activeProfile?.thinkingStyle || 'auto'} model=${resolvedModel} base=${resolvedBase}`);
 
         // Initialize host adapter for tools
