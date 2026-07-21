@@ -42,13 +42,23 @@ export interface StageFileModifying {
   op: 'write' | 'edit'
 }
 
+export type ReasoningLevel = 'low' | 'medium' | 'high'
+
+/** Provider family inferred from model name + apiBase. */
+export type ProviderFamily = 'openai' | 'anthropic' | 'gemini' | 'qwen' | 'unknown'
+
+export interface ActiveCapability {
+  supportsReasoning: boolean
+  providerFamily: ProviderFamily
+}
+
 // Top-level server -> client
 export type ServerMessage =
   | { type: 'update'; update: ViewUpdate }
   | { type: 'response'; text: string }
   | { type: 'error'; text: string }
   | { type: 'toast'; level: 'info' | 'success' | 'warning' | 'error'; text: string }
-  | { type: 'configData'; workspace?: string; models: Array<{ name: string; apiKey: string; apiBase: string; model: string }>; subAgentTimeout?: number; forceMultiAgent?: boolean; reasoningLevel?: string; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
+  | { type: 'configData'; workspace?: string; models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: string; contextWindow?: number }>; subAgentTimeout?: number; forceMultiAgent?: boolean; reasoningLevel?: string; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number; activeCapability?: ActiveCapability }
   | { type: 'cleared' }
   | StageFileTouch
   | StageFileModifying

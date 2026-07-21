@@ -26,7 +26,7 @@ export type WebviewToHostMessage =
   | { type: 'permissionResponse'; requestId: string; decision: 'allow_once' | 'always_allow' | 'deny' }
   | { type: 'clear' }
   | { type: 'getConfig' }
-  | { type: 'saveModels'; models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; activeModelIndex: number; subAgentTimeout?: number; forceMultiAgent?: boolean; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
+  | { type: 'saveModels'; models: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: string; contextWindow?: number }>; activeModelIndex: number; subAgentTimeout?: number; forceMultiAgent?: boolean; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
   | { type: 'setMode'; mode: 'plan' | 'code' }
   | { type: 'setTaskMode'; taskMode: TaskMode }
   | { type: 'setReasoningLevel'; level: ReasoningLevel }
@@ -57,6 +57,19 @@ export type WebviewToHostMessage =
 export type TaskMode = 'off' | 'llm-auto' | 'plugin-auto'
 export type ReasoningLevel = 'low' | 'medium' | 'high'
 
+/** Provider family inferred from model name + apiBase. Mirrors backend ProviderFamily. */
+export type ProviderFamily = 'openai' | 'anthropic' | 'gemini' | 'qwen' | 'unknown'
+
+/**
+ * Capability info for the currently active model.
+ * Computed server-side via model-catalog.inferCapability() and pushed
+ * in the configData message so the UI can adapt (e.g. reasoning picker labels).
+ */
+export interface ActiveCapability {
+  supportsReasoning: boolean
+  providerFamily: ProviderFamily
+}
+
 export interface LspProfile {
   languageId: string
   tools: string[]
@@ -82,7 +95,7 @@ export type HostToWebviewMessage =
   | { type: 'filePickerResult'; files: ContextAttachment[] }
   | { type: 'gitData'; changes: string[]; commits: Array<{ hash: string; message: string }> }
   | { type: 'cleared' }
-  | { type: 'configData'; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses' }>; subAgentTimeout?: number; forceMultiAgent?: boolean; reasoningLevel?: string; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number }
+  | { type: 'configData'; models?: Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: string; contextWindow?: number }>; subAgentTimeout?: number; forceMultiAgent?: boolean; reasoningLevel?: string; mode?: string; taskMode?: string; temperature?: number; topP?: number; maxTokens?: number; activeCapability?: ActiveCapability }
   | { type: 'configSaved' }
   | { type: 'showSettings' }
   | { type: 'modeChanged'; mode: 'plan' | 'code' }

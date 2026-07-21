@@ -37,6 +37,7 @@ import { WorkspaceManager, WorkspaceEntry } from './workspace-manager'
 import { type ChatHistoryPayload } from '../../src/agent/history-store'
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../../src/skills/builtin'
 import { inferCapability } from '../../src/agent/model-catalog'
+import { resolveProviderFamily } from '../../src/agent/llm-schema'
 
 const PORT = Number(process.env.VTE_PORT || 3000)
 const INITIAL_WORKSPACE = process.env.VTE_WORKSPACE || process.cwd()
@@ -163,6 +164,16 @@ async function activeConfigPersistence(): Promise<ConfigPersistence> {
 
 async function configData() {
   const c = await resolveConfig()
+  // Infer active model capability so the UI can adapt reasoning labels.
+  const activeModel = c.models[c.activeModelIndex]?.model || ''
+  const activeBase = c.models[c.activeModelIndex]?.apiBase || ''
+  const cap = inferCapability(activeModel)
+  const activeCapability = {
+    supportsReasoning: cap.supportsReasoning,
+    providerFamily: cap.supportsReasoning
+      ? resolveProviderFamily(activeModel, activeBase)
+      : 'unknown',
+  }
   return {
     type: 'configData',
     workspace: currentWorkspace,
@@ -176,6 +187,7 @@ async function configData() {
     temperature: c.temperature,
     topP: c.topP,
     maxTokens: c.maxTokens,
+    activeCapability,
   }
 }
 

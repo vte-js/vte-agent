@@ -107,6 +107,8 @@
             <ReasoningPicker
               :visible="showReasoningPicker"
               :model-value="reasoningLevel"
+              :supports-reasoning="activeCapability?.supportsReasoning"
+              :provider-family="activeCapability?.providerFamily"
               @update:model-value="$emit('update:reasoningLevel', $event)"
               @close="showReasoningPicker = false"
             />
@@ -147,7 +149,7 @@
 import { ref, computed, watch } from 'vue'
 import type { TokenStatsData } from './TokenStats'
 import type { ModelProfile } from '../composables/useConfig'
-import type { ContextAttachment, ReasoningLevel } from '../protocol'
+import type { ContextAttachment, ReasoningLevel, ActiveCapability } from '../protocol'
 import { useVsCode } from '../composables/useVsCode'
 import TokenRing from './TokenRing.vue'
 import VTooltip from './VTooltip.vue'
@@ -177,6 +179,8 @@ const props = defineProps<{
   models: ModelProfile[]
   activeModelIndex: number
   reasoningLevel: ReasoningLevel
+  /** Active model capability for reasoning picker dynamic labels. */
+  activeCapability?: ActiveCapability
   nextStepSuggestion?: string
   /** When true the input area stretches to fill its parent (resizable shell). */
   fill?: boolean

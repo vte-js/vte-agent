@@ -5,7 +5,7 @@ import { AgentEngine, AgentMode } from '../agent/engine';
 import { ModelCapability } from '../core/types';
 import { inferCapability } from '../agent/model-catalog';
 import { DEFAULT_PERMISSION_CONFIG, type PermissionConfig } from '../core/permissions';
-import { resolveApiProtocol } from '../agent/llm-schema';
+import { resolveApiProtocol, resolveProviderFamily } from '../agent/llm-schema';
 import { getAllTasks } from '../agent/tasks';
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../skills/builtin';
 import { getSessionStats, getRecentRecords } from '../agent/token-tracker';
@@ -1813,6 +1813,17 @@ Example usage here
     this.subAgentTimeout = this.globalState.get<number>('vte.subAgentTimeout', 300);
     this.forceMultiAgent = this.globalState.get<boolean>('vte.forceMultiAgent', false);
 
+    // Infer active model capability so the UI can adapt reasoning labels.
+    const activeModel = models[activeModelIndex]?.model || '';
+    const activeBase = models[activeModelIndex]?.apiBase || '';
+    const cap = inferCapability(activeModel);
+    const activeCapability = {
+      supportsReasoning: cap.supportsReasoning,
+      providerFamily: cap.supportsReasoning
+        ? resolveProviderFamily(activeModel, activeBase)
+        : 'unknown' as any,
+    };
+
     this.postMessage({
       type: 'configData',
       models: models.length > 0 ? models : [{
@@ -1829,8 +1840,9 @@ Example usage here
       temperature: this.temperature,
       topP: this.topP,
       maxTokens: this.maxTokens,
+      activeCapability,
     });
-    log(`Config sent: ${models.length} model profiles`);
+    log(`Config sent: ${models.length} model profiles, capability=${activeCapability.providerFamily}/${activeCapability.supportsReasoning}`);
   }
 
   private pushTasks() {

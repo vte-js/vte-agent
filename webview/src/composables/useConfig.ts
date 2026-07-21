@@ -1,7 +1,7 @@
 import { ref, watch } from 'vue'
 import { useVsCode } from './useVsCode'
 import { useNotification } from './useNotification'
-import type { ReasoningLevel, LspProfile } from '../protocol'
+import type { ReasoningLevel, LspProfile, ActiveCapability } from '../protocol'
 
 export interface ModelProfile {
   name: string
@@ -67,6 +67,8 @@ export function useConfig() {
   const temperature = ref(0.7)
   const topP = ref(1)
   const maxTokens = ref(4096)
+  /** Active model capability (pushed by host via inferCapability). */
+  const activeCapability = ref<ActiveCapability | undefined>(undefined)
   let isConfigEditorInitializing = false
 
   watch(configEditorVisible, (v) => {
@@ -108,6 +110,7 @@ export function useConfig() {
       if (typeof msg.temperature === 'number') temperature.value = msg.temperature
       if (typeof msg.topP === 'number') topP.value = msg.topP
       if (typeof msg.maxTokens === 'number') maxTokens.value = msg.maxTokens
+      if (msg.activeCapability) activeCapability.value = msg.activeCapability
     } else if (msg.type === 'configSaved') {
       // handled by parent
     } else if (msg.type === 'showSettings') {
@@ -282,7 +285,7 @@ export function useConfig() {
     configVisible, configEditorVisible, models, activeModelIndex,
     apiKey, apiBase, model, permissionConfig, reasoningLevel,
     lspProfiles, lspConfigProfiles, subAgentTimeout, forceMultiAgent,
-    mode, taskMode, temperature, topP, maxTokens,
+    mode, taskMode, temperature, topP, maxTokens, activeCapability,
     toggleConfig, selectModel, addModel, updateModel, deleteModel, saveConfig, init,
     updatePermissionConfig, setReasoningLevel, setupLsp, testLsp,
     openConfigEditor, saveLspProfile, deleteLspProfile, addLspProfile,
