@@ -1,4 +1,4 @@
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useVsCode } from './useVsCode'
 import { useNotification } from './useNotification'
 import type { ReasoningLevel, LspProfile, ActiveCapability } from '../protocol'
@@ -69,6 +69,8 @@ export function useConfig() {
   const maxTokens = ref(4096)
   /** Active model capability (pushed by host via inferCapability). */
   const activeCapability = ref<ActiveCapability | undefined>(undefined)
+  /** Active model's API protocol (derived from models array, drives UI). */
+  const activeApiProtocol = computed(() => models.value[activeModelIndex.value]?.api ?? 'chat')
   let isConfigEditorInitializing = false
 
   watch(configEditorVisible, (v) => {
@@ -285,7 +287,7 @@ export function useConfig() {
     configVisible, configEditorVisible, models, activeModelIndex,
     apiKey, apiBase, model, permissionConfig, reasoningLevel,
     lspProfiles, lspConfigProfiles, subAgentTimeout, forceMultiAgent,
-    mode, taskMode, temperature, topP, maxTokens, activeCapability,
+    mode, taskMode, temperature, topP, maxTokens, activeCapability, activeApiProtocol,
     toggleConfig, selectModel, addModel, updateModel, deleteModel, saveConfig, init,
     updatePermissionConfig, setReasoningLevel, setupLsp, testLsp,
     openConfigEditor, saveLspProfile, deleteLspProfile, addLspProfile,

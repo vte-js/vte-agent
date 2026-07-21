@@ -67,7 +67,7 @@
       :models="config.models.value"
       :active-model-index="config.activeModelIndex.value"
       :reasoning-level="config.reasoningLevel.value"
-      :active-capability="config.activeCapability.value"
+      :api-protocol="config.activeApiProtocol.value"
       :next-step-suggestion="chat.nextStepSuggestion.value"
       @send="onSend"
       @stop="onStop"

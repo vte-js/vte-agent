@@ -46,18 +46,15 @@
 </template>
 
 <script setup lang="ts">
-import type { ReasoningLevel, ProviderFamily } from '../protocol'
+import type { ReasoningLevel } from '../protocol'
 
 const props = withDefaults(defineProps<{
   visible: boolean
   modelValue: ReasoningLevel
-  /** Whether the active model supports native reasoning (from backend inferCapability). */
-  supportsReasoning?: boolean
-  /** Inferred provider family — drives label wording. */
-  providerFamily?: ProviderFamily
+  /** Active model's API protocol ('chat' | 'responses') — drives display style. */
+  apiProtocol?: 'chat' | 'responses'
 }>(), {
-  supportsReasoning: true,
-  providerFamily: 'unknown',
+  apiProtocol: 'chat',
 })
 
 const emit = defineEmits<{
@@ -73,63 +70,26 @@ function select(level: ReasoningLevel) {
 // ── Per-option descriptor ──
 interface OptDesc { label: string; desc: string }
 
-/** Hint badge shown in dialog header when we know the backend dialect. */
+/** Hint badge shown in dialog header — driven by API protocol. */
 const capabilityHint = computed(() => {
-  if (!props.supportsReasoning) return '仅 System Prompt 引导'
-  switch (props.providerFamily) {
-    case 'openai':   return 'OpenAI reasoning_effort'
-    case 'anthropic': return 'Anthropic thinking budget'
-    case 'qwen':     return 'Qwen enable_thinking'
-    case 'gemini':   return 'Gemini thinking'
-    default:         return ''
-  }
+  return props.apiProtocol === 'responses' ? 'OpenAI reasoning_effort' : 'System Prompt 引导'
 })
 
-/** Build descriptors based on current model capability + family. */
+/** Build descriptors based on protocol. */
 function makeOpts(): { low: OptDesc; medium: OptDesc; high: OptDesc } {
-  const fam = props.providerFamily
-  const sr = props.supportsReasoning
-
-  if (!sr) {
-    // No native reasoning → explain prompt-level guidance.
+  if (props.apiProtocol === 'responses') {
     return {
-      low:    { label: '低 — 快速响应', desc: '轻量引导，直接输出结果' },
-      medium: { label: '中 — 标准思考', desc: 'System Prompt 引导逐步推理，平衡速度与质量' },
-      high:   { label: '高 — 深度思考', desc: '强化推理指令，更高质量但响应较慢' },
+      low:    { label: '低 — minimal',      desc: 'reasoning_effort=minimal，最快输出' },
+      medium: { label: '中 — medium（默认）', desc: 'reasoning_effort=medium，平衡速度与深度' },
+      high:   { label: '高 — high',          desc: 'reasoning_effort=high，最深推理链路' },
     }
   }
-
-  switch (fam) {
-    case 'openai':
-      return {
-        low:    { label: '低 — Minimal',   desc: 'reasoning_effort=minimal，最快输出' },
-        medium: { label: '中 — Medium（默认）', desc: 'reasoning_effort=medium，平衡速度与深度' },
-        high:   { label: '高 — High',       desc: 'reasoning_effort=high，最深推理链路' },
-      }
-    case 'anthropic':
-      return {
-        low:    { label: '低 — 轻量思考', desc: '较小 thinking budget，快速回答简单问题' },
-        medium: { label: '中 — 标准思考', desc: '标准 thinking budget，平衡速度与质量' },
-        high:   { label: '高 — 深度思考', desc: '最大 thinking budget，复杂推理任务首选' },
-      }
-    case 'qwen':
-      return {
-        low:    { label: '低 — 关闭思考', desc: '不启用 enable_thinking，直接输出' },
-        medium: { label: '中 — 标准思考', desc: '启用思考模式，中等 budget' },
-        high:   { label: '高 — 深度思考', desc: '增大 thinking budget，更强推理能力' },
-      }
-    case 'gemini':
-      return {
-        low:    { label: '低 — 快速响应', desc: '关闭或最小化 thinking，最快输出' },
-        medium: { label: '中 — 标准思考', desc: '启用 thinking，平衡速度与质量' },
-        high:   { label: '高 — 深度思考', desc: '最大 thinking budget，深度推理' },
-      }
-    default:
-      return {
-        low:    { label: '低 — 快速响应',   desc: '关闭或弱化思考模式，直接输出结果' },
-        medium: { label: '中 — 标准思考',   desc: '启用思考模式，平衡速度与输出质量' },
-        high:   { label: '高 — 深度思考',   desc: '启用深度思考，更高质量的推理和输出' },
-      }
+  // Chat completions: generic 3-level. Backend maps to system prompt or
+  // model-specific params (enable_thinking / thinking budget etc.) for each model.
+  return {
+    low:    { label: '低 — 快速响应',   desc: '轻量引导，直接输出结果' },
+    medium: { label: '中 — 标准思考',   desc: '标准推理强度，平衡速度与质量' },
+    high:   { label: '高 — 深度思考',   desc: '强推理指令，更高质量，响应较慢' },
   }
 }
 
