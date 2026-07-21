@@ -119,9 +119,10 @@ export interface AgentMessage {
 export type ApiProtocol = 'chat' | 'responses'
 
 /**
- * User-facing reasoning level (three-step selector in the UI).
+ * User-facing reasoning level (five-step selector in the UI for Responses API;
+ * Chat Completions shows a subset of three).
  */
-export type ReasoningLevel = 'low' | 'medium' | 'high'
+export type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
 /**
  * Backend reasoning effort. Superset used by both Responses API and

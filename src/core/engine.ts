@@ -3,7 +3,7 @@
  * Framework-agnostic core implementation
  */
 
-import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, AgentMode, TaskMode, RuntimeConfig, AgentEvent, CheckpointMetadata } from './types'
+import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, AgentMode, TaskMode, RuntimeConfig, AgentEvent, CheckpointMetadata, ReasoningLevel } from './types'
 import { createTokenBudget, trackTokens, TokenBudget } from './middleware'
 import { buildPromptFromTemplate, wrapResponse, buildEnvironmentContext } from './prompt'
 import { getAllTools } from './registry'
@@ -29,7 +29,7 @@ export class AgentEngine {
   private tokenBudget: TokenBudget
   private onEvent?: (event: AgentEvent) => void
   private customTools?: ToolDefinition[]
-  private reasoningLevel: 'low' | 'medium' | 'high' = 'medium'
+  private reasoningLevel: ReasoningLevel = 'medium'
 
   // Context management: keep only recent messages, summarize old ones
   private readonly MAX_HISTORY_MESSAGES = 20
@@ -43,11 +43,11 @@ export class AgentEngine {
     this.tokenBudget = createTokenBudget()
   }
 
-  setReasoningLevel(level: 'low' | 'medium' | 'high') {
+  setReasoningLevel(level: ReasoningLevel) {
     this.reasoningLevel = level
   }
 
-  getReasoningLevel(): 'low' | 'medium' | 'high' {
+  getReasoningLevel(): ReasoningLevel {
     return this.reasoningLevel
   }
 

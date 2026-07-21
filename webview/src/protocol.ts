@@ -55,7 +55,7 @@ export type WebviewToHostMessage =
   | { type: 'lspConfigEditor:add'; profile: LspProfile }
 
 export type TaskMode = 'off' | 'llm-auto' | 'plugin-auto'
-export type ReasoningLevel = 'low' | 'medium' | 'high'
+export type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
 /** Provider family inferred from model name + apiBase. Mirrors backend ProviderFamily. */
 export type ProviderFamily = 'openai' | 'anthropic' | 'gemini' | 'qwen' | 'unknown'

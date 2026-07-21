@@ -119,7 +119,7 @@ import type { AgentRole } from '../../src/agent/agent-role'
 import ModelSelect from './ModelSelect.vue'
 
 type ThinkingStyle = 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
-type ReasoningLevel = 'low' | 'medium' | 'high'
+type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
 const props = defineProps<{
   visible: boolean

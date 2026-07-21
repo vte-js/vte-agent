@@ -42,7 +42,7 @@ export interface StageFileModifying {
   op: 'write' | 'edit'
 }
 
-export type ReasoningLevel = 'low' | 'medium' | 'high'
+export type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
 /** Provider family inferred from model name + apiBase. */
 export type ProviderFamily = 'openai' | 'anthropic' | 'gemini' | 'qwen' | 'unknown'

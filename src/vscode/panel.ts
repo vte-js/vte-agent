@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AgentEngine, AgentMode } from '../agent/engine';
-import { ModelCapability } from '../core/types';
+import { ModelCapability, ReasoningLevel } from '../core/types';
 import { inferCapability } from '../agent/model-catalog';
 import { DEFAULT_PERMISSION_CONFIG, type PermissionConfig } from '../core/permissions';
 import { resolveApiProtocol, resolveProviderFamily } from '../agent/llm-schema';
@@ -49,7 +49,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private temperature: number = 0.7;
   private topP: number = 1;
   private maxTokens: number = 4096;
-  private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
+  private reasoningLevel: ReasoningLevel = 'medium';
   /** Cached permission policy (mirrors engine's in-memory config so a
    *  refreshed webview re-seeds from globalState instead of defaults). */
   private permissionConfig: PermissionConfig = { ...DEFAULT_PERMISSION_CONFIG };
@@ -136,7 +136,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.temperature = this.globalState.get<number>('vte.temperature', 0.7)
     this.topP = this.globalState.get<number>('vte.topP', 1)
     this.maxTokens = this.globalState.get<number>('vte.maxTokens', 4096)
-    this.reasoningLevel = (this.globalState.get<'low' | 'medium' | 'high'>('vte.reasoningLevel', 'medium')) || 'medium'
+    this.reasoningLevel = (this.globalState.get<ReasoningLevel>('vte.reasoningLevel', 'medium')) || 'medium'
     this.permissionConfig = { ...DEFAULT_PERMISSION_CONFIG, ...(this.globalState.get<Record<string, string>>('vte.permissionConfig', {})) }
   }
 
@@ -1998,7 +1998,7 @@ Example usage here
       apiBase: apiBase || creds.apiBase,
       ...(api ? { api: api as 'chat' | 'responses' } : {}),
       ...(thinkingStyle ? { thinkingStyle: thinkingStyle as 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto' } : {}),
-      ...(reasoningLevel ? { reasoningLevel: reasoningLevel as 'low' | 'medium' | 'high' } : {}),
+      ...(reasoningLevel ? { reasoningLevel: reasoningLevel as ReasoningLevel } : {}),
       ...(isolation ? { isolation: isolation as 'shared' | 'snapshot' } : {}),
       workspaceRoot,
     });
@@ -2110,7 +2110,7 @@ Example usage here
    */
   private buildAgentEngine(
     model: string, apiKey: string, apiBase: string,
-    reasoningLevel: 'low' | 'medium' | 'high' = 'medium',
+    reasoningLevel: ReasoningLevel = 'medium',
   ): AgentEngine {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
     const ctx = new VTEContextManager(workspaceRoot);

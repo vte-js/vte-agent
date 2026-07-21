@@ -110,7 +110,7 @@ export function useMultiAgent() {
     isolation?: 'shared' | 'snapshot'
     api?: 'chat' | 'responses'
     thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
-    reasoningLevel?: 'low' | 'medium' | 'high'
+    reasoningLevel?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
   }) {
     send({
       type: 'multiAgent:createAgent',

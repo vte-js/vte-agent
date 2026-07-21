@@ -41,15 +41,19 @@ import { inferCapability, isOpenAIReasoningModel, resolveFamily, resolveThinking
 // Reasoning mapping (absorbed from the former reasoning.ts)
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Map the UI's 3-step level onto a backend effort value. */
+/** Map the UI's 5-step level onto a backend effort value. */
 export function mapLevelToEffort(level: ReasoningLevel): ReasoningLevel {
   switch (level) {
+    case 'minimal':
+      return 'minimal';
     case 'low':
       return 'low';
     case 'medium':
       return 'medium';
     case 'high':
       return 'high';
+    case 'xhigh':
+      return 'xhigh';
     default:
       return 'medium';
   }
@@ -60,9 +64,11 @@ export function mapLevelToEffort(level: ReasoningLevel): ReasoningLevel {
  * explicit budget (Qwen `thinking_budget`, Anthropic `budget_tokens`).
  */
 const THINKING_BUDGET: Record<ReasoningLevel, number> = {
+  minimal: 1024,
   low: 2048,
   medium: 8192,
   high: 24576,
+  xhigh: 65536,
 };
 
 /**
@@ -129,9 +135,11 @@ function buildChatReasoningParams(opts: {
   const style = resolveThinkingStyle(opts.style, opts.model, 'chat');
   const effort = mapLevelToEffort(opts.level);
   const thinkingEnabled = opts.level !== 'low'; // low = fast/cheap: thinking off
-  // High reasoning → lower temperature for more focused output.
+  // High/xhigh reasoning → lower temperature for more focused output.
   const temperature =
-    opts.level === 'high' ? Math.min(opts.baseTemperature, 0.3) : opts.baseTemperature;
+    (opts.level === 'high' || opts.level === 'xhigh')
+      ? Math.min(opts.baseTemperature, 0.3)
+      : opts.baseTemperature;
 
   switch (style) {
     case 'openai':

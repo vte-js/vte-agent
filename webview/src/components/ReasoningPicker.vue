@@ -11,31 +11,19 @@
             </button>
           </div>
           <div class="reasoning-options">
-            <button class="reasoning-opt" :class="[ { selected: modelValue === 'low' }, 'low' ]" @click="select('low')">
-              <div class="reasoning-opt-icon low">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M13 2L3 14h9l-1 10 10-12h-9l1-10z"/></svg>
+            <button
+              v-for="opt in opts"
+              :key="opt.level"
+              class="reasoning-opt"
+              :class="[{ selected: modelValue === opt.level }, opt.level ]"
+              @click="select(opt.level)"
+            >
+              <div class="reasoning-opt-icon" :class="opt.level">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" v-html="opt.iconSvg" />
               </div>
               <div class="reasoning-opt-info">
-                <span class="reasoning-opt-name">{{ optLow.label }}</span>
-                <span class="reasoning-opt-desc">{{ optLow.desc }}</span>
-              </div>
-            </button>
-            <button class="reasoning-opt" :class="[ { selected: modelValue === 'medium' }, 'medium' ]" @click="select('medium')">
-              <div class="reasoning-opt-icon medium">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-              </div>
-              <div class="reasoning-opt-info">
-                <span class="reasoning-opt-name">{{ optMedium.label }}</span>
-                <span class="reasoning-opt-desc">{{ optMedium.desc }}</span>
-              </div>
-            </button>
-            <button class="reasoning-opt" :class="[ { selected: modelValue === 'high' }, 'high' ]" @click="select('high')">
-              <div class="reasoning-opt-icon high">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-              </div>
-              <div class="reasoning-opt-info">
-                <span class="reasoning-opt-name">{{ optHigh.label }}</span>
-                <span class="reasoning-opt-desc">{{ optHigh.desc }}</span>
+                <span class="reasoning-opt-name">{{ opt.label }}</span>
+                <span class="reasoning-opt-desc">{{ opt.desc }}</span>
               </div>
             </button>
           </div>
@@ -69,35 +57,47 @@ function select(level: ReasoningLevel) {
 }
 
 // ── Per-option descriptor ──
-interface OptDesc { label: string; desc: string }
+interface OptItem {
+  level: ReasoningLevel
+  label: string
+  desc: string
+  iconSvg: string
+}
 
 /** Hint badge shown in dialog header — driven by API protocol. */
 const capabilityHint = computed(() => {
   return props.apiProtocol === 'responses' ? 'OpenAI reasoning_effort' : 'System Prompt 引导'
 })
 
-/** Build descriptors based on protocol. */
-function makeOpts(): { low: OptDesc; medium: OptDesc; high: OptDesc } {
-  if (props.apiProtocol === 'responses') {
-    return {
-      low:    { label: '低 — minimal',      desc: 'reasoning_effort=minimal，最快输出' },
-      medium: { label: '中 — medium（默认）', desc: 'reasoning_effort=medium，平衡速度与深度' },
-      high:   { label: '高 — high',          desc: 'reasoning_effort=high，最深推理链路' },
-    }
-  }
-  // Chat completions: generic 3-level. Backend maps to system prompt or
-  // model-specific params (enable_thinking / thinking budget etc.) for each model.
-  return {
-    low:    { label: '低 — 快速响应',   desc: '轻量引导，直接输出结果' },
-    medium: { label: '中 — 标准思考',   desc: '标准推理强度，平衡速度与质量' },
-    high:   { label: '高 — 深度思考',   desc: '强推理指令，更高质量，响应较慢' },
-  }
+const ICONS: Record<ReasoningLevel, string> = {
+  minimal: '<path d="M13 2L3 14h9l-1 10 10-12h-9l1-10z"/>',
+  low:     '<path d="M13 2L3 14h9l-1 10 10-12h-9l1-10z"/>',
+  medium:  '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>',
+  high:    '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>',
+  xhigh:   '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>',
 }
 
-const opts = computed(makeOpts)
-const optLow = computed(() => opts.value.low)
-const optMedium = computed(() => opts.value.medium)
-const optHigh = computed(() => opts.value.high)
+/** Build option list based on protocol. Responses shows 5 fine-grained steps;
+ *  Chat shows 5 steps with generic wording. */
+const opts = computed((): OptItem[] => {
+  if (props.apiProtocol === 'responses') {
+    return [
+      { level: 'minimal', label: '极简 — minimal',   desc: 'reasoning_effort=minimal，最小推理，最快响应', iconSvg: ICONS.minimal },
+      { level: 'low',     label: '低 — low',           desc: 'reasoning_effort=low，轻量推理，适合简单任务', iconSvg: ICONS.low },
+      { level: 'medium',  label: '中 — medium（默认）', desc: 'reasoning_effort=medium，标准推理，平衡速度与质量', iconSvg: ICONS.medium },
+      { level: 'high',    label: '高 — high',          desc: 'reasoning_effort=high，深度推理，复杂任务首选', iconSvg: ICONS.high },
+      { level: 'xhigh',   label: '极高 — xhigh',        desc: 'reasoning_effort=xhigh，最大推理深度，最高质量', iconSvg: ICONS.xhigh },
+    ]
+  }
+  // Chat completions: generic 5-level.
+  return [
+    { level: 'minimal', label: '极简 — 最小推理',  desc: '几乎不推理，直接输出，最快响应', iconSvg: ICONS.minimal },
+    { level: 'low',     label: '低 — 快速响应',    desc: '轻量引导，直接输出结果', iconSvg: ICONS.low },
+    { level: 'medium',  label: '中 — 标准思考',    desc: '标准推理强度，平衡速度与质量', iconSvg: ICONS.medium },
+    { level: 'high',    label: '高 — 深度思考',    desc: '强推理指令，更高质量，响应较慢', iconSvg: ICONS.high },
+    { level: 'xhigh',   label: '极高 — 极限推理',  desc: '最大推理深度，最高质量输出', iconSvg: ICONS.xhigh },
+  ]
+})
 </script>
 
 <style scoped>
@@ -146,9 +146,11 @@ const optHigh = computed(() => opts.value.high)
   width: 44px; height: 44px; border-radius: 10px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
 }
+.reasoning-opt-icon.minimal { background: rgba(16,185,129,0.12); color: #10b981; }
 .reasoning-opt-icon.low { background: rgba(34,197,94,0.12); color: #22c55e; }
 .reasoning-opt-icon.medium { background: rgba(245,158,11,0.12); color: #f59e0b; }
 .reasoning-opt-icon.high { background: rgba(168,85,247,0.12); color: #a855f7; }
+.reasoning-opt-icon.xhigh { background: rgba(239,68,68,0.12); color: #ef4444; }
 .reasoning-opt-info { display: flex; flex-direction: column; gap: 2px; }
 .reasoning-opt-name { font-size: 13px; font-weight: 500; color: #e2e8f0; }
 .reasoning-opt-desc { font-size: 11px; color: #64748b; }

@@ -5,6 +5,8 @@
  * system prompts, and execution configurations.
  */
 
+import type { ReasoningLevel } from '../core/types'
+
 export interface AgentRole {
   id: string
   name: string
@@ -20,7 +22,7 @@ export interface AgentRole {
   /** How this agent expresses reasoning effort */
   thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
   /** Reasoning strength for this agent */
-  reasoningLevel?: 'low' | 'medium' | 'high'
+  reasoningLevel?: ReasoningLevel
   /** Tool name whitelist — empty = all tools */
   tools?: string[]
   /** Max concurrent tasks for this role */
