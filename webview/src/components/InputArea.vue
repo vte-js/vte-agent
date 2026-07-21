@@ -240,7 +240,13 @@ const canSend = computed(() => {
 })
 
 const reasoningLabel = computed(() => {
-  const labels: Record<string, string> = { low: '低', medium: '中', high: '高' }
+  const labels: Record<ReasoningLevel, string> = {
+    minimal: '极简',
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '极高',
+  }
   return labels[props.reasoningLevel] || '中'
 })
 

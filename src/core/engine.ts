@@ -300,14 +300,14 @@ export class AgentEngine {
           parameters: t.parameters,
         },
       })),
-      // High reasoning → lower temperature for more focused output.
-      temperature: this.reasoningLevel === 'high' ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7),
+      // High/xhigh reasoning → lower temperature for more focused output.
+      temperature: (this.reasoningLevel === 'high' || this.reasoningLevel === 'xhigh') ? Math.min(temperature ?? 0.7, 0.3) : (temperature ?? 0.7),
       stream: true,
       stream_options: { include_usage: true },
       ...(topP !== undefined && { top_p: topP }),
       ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-      // Thinking: gated by reasoning level (low = off for real token savings).
-      chat_template_kwargs: { enable_thinking: this.reasoningLevel !== 'low' },
+      // Thinking: gated by reasoning level (minimal/low = off for real token savings).
+      chat_template_kwargs: { enable_thinking: this.reasoningLevel !== 'low' && this.reasoningLevel !== 'minimal' },
     }
 
     console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature} stream=true thinking=${this.reasoningLevel !== 'low'} reasoning=${this.reasoningLevel}`)
