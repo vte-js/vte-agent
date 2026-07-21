@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AgentEngine, AgentMode } from '../agent/engine';
+import { DEFAULT_PERMISSION_CONFIG, type PermissionConfig } from '../core/permissions';
 import { resolveApiProtocol } from '../agent/reasoning';
 import { getAllTasks } from '../agent/tasks';
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../skills/builtin';
@@ -47,6 +48,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private topP: number = 1;
   private maxTokens: number = 4096;
   private reasoningLevel: 'low' | 'medium' | 'high' = 'medium';
+  /** Cached permission policy (mirrors engine's in-memory config so a
+   *  refreshed webview re-seeds from globalState instead of defaults). */
+  private permissionConfig: PermissionConfig = { ...DEFAULT_PERMISSION_CONFIG };
   /** Sub-agent work-order timeout in seconds (host-agnostic config, surfaced in our own ConfigPanel, not VSCode native settings). */
   private subAgentTimeout = 300;
   private forceMultiAgent = false;
@@ -130,6 +134,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.temperature = this.globalState.get<number>('vte.temperature', 0.7)
     this.topP = this.globalState.get<number>('vte.topP', 1)
     this.maxTokens = this.globalState.get<number>('vte.maxTokens', 4096)
+    this.reasoningLevel = (this.globalState.get<'low' | 'medium' | 'high'>('vte.reasoningLevel', 'medium')) || 'medium'
+    this.permissionConfig = { ...DEFAULT_PERMISSION_CONFIG, ...(this.globalState.get<Record<string, string>>('vte.permissionConfig', {})) }
   }
 
 
@@ -268,6 +274,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'setReasoningLevel':
           this.reasoningLevel = message.level;
+          await this.globalState.update('vte.reasoningLevel', message.level);
           this.engine?.setReasoningLevel(message.level);
           log(`Reasoning level changed to: ${message.level}`);
           break;
@@ -1241,6 +1248,7 @@ Example usage here
         const ctx = new VTEContextManager(workspaceRoot);
         this.engine = new AgentEngine(ctx, model || cfgModel, apiKey, apiBase, workspaceRoot);
         this.engine.setReasoningLevel(this.reasoningLevel);
+        this.engine.setPermissionConfig(this.permissionConfig as any);
 
         // Apply API protocol + thinking style from the active model profile.
         // Falls back to 'chat' + 'auto' (style is inferred from the model name).
@@ -1501,9 +1509,14 @@ Example usage here
   }
 
   private handleSetPermissionConfig(config: Record<string, string>) {
+    // Persist the permission policy to globalState (not just engine memory)
+    // so it survives a webview refresh — previously it was engine-only and
+    // reverted to the "询问" default on reload.
+    this.permissionConfig = { ...this.permissionConfig, ...config };
+    void this.globalState.update('vte.permissionConfig', this.permissionConfig);
     if (this.engine) {
-      this.engine.setPermissionConfig(config as any);
-      log(`Permission config updated: ${JSON.stringify(config)}`);
+      this.engine.setPermissionConfig(this.permissionConfig as any);
+      log(`Permission config updated: ${JSON.stringify(this.permissionConfig)}`);
     }
   }
 
