@@ -32,7 +32,7 @@ import { Scheduler, ScheduleConfig } from '../../src/agent/scheduler'
 import { BUILTIN_ROLES } from '../../src/agent/agent-role'
 import { SessionManager } from '../../src/agent/session-manager'
 import { WebIDEHostAdapter, WebIDEGit } from './host-adapter'
-import { ConfigPersistence, type PersistedConfig } from './persistence'
+import { ConfigPersistence, type PersistedConfig, type PermissionConfig } from './persistence'
 import { WorkspaceManager, WorkspaceEntry } from './workspace-manager'
 import { type ChatHistoryPayload } from '../../src/agent/history-store'
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../../src/skills/builtin'
@@ -907,18 +907,21 @@ async function main(): Promise<void> {
       case 'feedback':
         // No-op feedback sink for web-ide (VSCode host logs it).
         break
-      case 'getPermissionConfig':
-        post({
-          type: 'permissionConfig',
-          config: {
-            fileRead: 'allow', fileWrite: 'ask', terminal: 'ask', git: 'allow',
-            diagnostics: 'allow', web: 'ask', task: 'allow', checkpoint: 'allow',
-          },
-        })
+      case 'getPermissionConfig': {
+        const c = await resolveConfig()
+        post({ type: 'permissionConfig', config: c.permissionConfig })
         break
-      case 'setPermissionConfig':
-        // Web IDE uses a fixed permissive policy; acknowledge but don't persist.
+      }
+      case 'setPermissionConfig': {
+        // Persist the permission policy to the SAME source resolveConfig() reads
+        // from (workspace-local if it owns models, else global). Previously this
+        // was a no-op, so "文件写入允许" reverted to the "询问" default on refresh.
+        const cfg = (msg as any).config as Partial<PermissionConfig> | undefined
+        if (cfg) {
+          await (await activeConfigPersistence()).updatePermissionConfig(cfg)
+        }
         break
+      }
       case 'getLspProfiles':
         post({ type: 'lspProfiles', profiles: {} })
         break

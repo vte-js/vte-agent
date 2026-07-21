@@ -21,6 +21,30 @@ export interface ModelProfile {
   api?: 'chat' | 'responses'
 }
 
+export type PermissionValue = 'allow' | 'ask' | 'deny'
+
+export interface PermissionConfig {
+  fileRead: PermissionValue
+  fileWrite: PermissionValue
+  terminal: PermissionValue
+  git: PermissionValue
+  diagnostics: PermissionValue
+  web: PermissionValue
+  task: PermissionValue
+  checkpoint: PermissionValue
+}
+
+export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
+  fileRead: 'allow',
+  fileWrite: 'ask',
+  terminal: 'ask',
+  git: 'allow',
+  diagnostics: 'allow',
+  web: 'ask',
+  task: 'allow',
+  checkpoint: 'allow',
+}
+
 export interface PersistedConfig {
   models: ModelProfile[]
   activeModelIndex: number
@@ -33,6 +57,8 @@ export interface PersistedConfig {
   temperature: number
   topP: number
   maxTokens: number
+  // Permission policy (persisted so "文件写入允许" etc. survive a refresh)
+  permissionConfig: PermissionConfig
 }
 
 const DEFAULT_CONFIG: PersistedConfig = {
@@ -46,6 +72,7 @@ const DEFAULT_CONFIG: PersistedConfig = {
   temperature: 0.7,
   topP: 1,
   maxTokens: 4096,
+  permissionConfig: { ...DEFAULT_PERMISSION_CONFIG },
 }
 
 const CONFIG_DIR = '.vte'
@@ -166,6 +193,21 @@ export class ConfigPersistence {
     current.reasoningLevel = level
     await this.save(current)
     return current
+  }
+
+  /**
+   * Persist the permission policy. Merges into the existing permissionConfig
+   * so a partial update (only the changed category) doesn't wipe the rest.
+   * Fixes the Web IDE bug where "文件写入允许" reverted to "询问" on refresh.
+   */
+  async updatePermissionConfig(config: Partial<PermissionConfig>): Promise<PersistedConfig> {
+    const current = await this.load()
+    const updated: PersistedConfig = {
+      ...current,
+      permissionConfig: { ...current.permissionConfig, ...config },
+    }
+    await this.save(updated)
+    return updated
   }
 
   /**
