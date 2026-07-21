@@ -16,9 +16,13 @@
  * actually speaks (Chat + Responses) while leaving room for native
  * Anthropic/Gemini clients later.
  *
- * Reuses ./reasoning.ts (resolveThinkingStyle / buildChatReasoningParams /
- * buildResponsesReasoning / isOpenAIReasoningModel) — reasoning mapping is
- * NOT reimplemented here.
+ * Reasoning mapping (formerly the standalone reasoning.ts) is NOW absorbed
+ * here: `mapLevelToEffort` / `buildChatReasoningParams` /
+ * `buildResponsesReasoning` / `resolveThinkingStyle` / `resolveApiProtocol`
+ * all live in this module. `isOpenAIReasoningModel` lives in model-catalog
+ * (the model-knowledge layer) as the single source of truth, so there is
+ * exactly one definition shared by the capability inference and the field
+ * mapping with no circular import.
  */
 
 import {
@@ -29,15 +33,159 @@ import {
   ProviderFamily,
   ReasoningLevel,
   ThinkingStyle,
+  ApiProtocol,
 } from '../core/types';
-import {
-  resolveThinkingStyle,
-  buildChatReasoningParams,
-  buildResponsesReasoning,
-  isOpenAIReasoningModel,
-  mapLevelToEffort,
-} from './reasoning';
-import { inferCapability } from './model-catalog';
+import { inferCapability, isOpenAIReasoningModel } from './model-catalog';
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reasoning mapping (absorbed from the former reasoning.ts)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Map the UI's 3-step level onto a backend effort value. */
+export function mapLevelToEffort(level: ReasoningLevel): ReasoningLevel {
+  switch (level) {
+    case 'low':
+      return 'low';
+    case 'medium':
+      return 'medium';
+    case 'high':
+      return 'high';
+    default:
+      return 'medium';
+  }
+}
+
+/**
+ * Approximate thinking-token budgets per level, for backends that accept an
+ * explicit budget (Qwen `thinking_budget`, Anthropic `budget_tokens`).
+ */
+const THINKING_BUDGET: Record<ReasoningLevel, number> = {
+  low: 2048,
+  medium: 8192,
+  high: 24576,
+};
+
+/**
+ * Smart-default the wire protocol when a profile doesn't set `api` explicitly.
+ *
+ * Mirrors how Codex resolves `wire_api`: an explicit value always wins (the
+ * developer override), otherwise infer from the endpoint + model rather than
+ * blindly guessing from the URL string alone.
+ *
+ * Rule:
+ *   - explicit 'chat' | 'responses'            → honoured as-is
+ *   - api.openai.com + OpenAI reasoning model  → 'responses'
+ *     (o-series / gpt-5.x on the first-party endpoint speak Responses natively)
+ *   - everything else (OpenAI-compatible gateways, Azure, MiMo, Qwen, Ollama,
+ *     non-reasoning OpenAI models)             → 'chat'
+ */
+export function resolveApiProtocol(
+  explicit: ApiProtocol | undefined,
+  model: string,
+  baseUrl: string
+): ApiProtocol {
+  if (explicit === 'chat' || explicit === 'responses') return explicit;
+  const url = (baseUrl || '').toLowerCase();
+  const isFirstPartyOpenAI = /(^|\/\/|\.)api\.openai\.com(\/|$)/.test(url);
+  if (isFirstPartyOpenAI && isOpenAIReasoningModel(model)) return 'responses';
+  return 'chat';
+}
+
+/**
+ * Resolve an 'auto' thinking style into a concrete one, using the model name
+ * and the wire protocol.
+ */
+function resolveThinkingStyle(
+  style: ThinkingStyle,
+  model: string,
+  protocol: ApiProtocol
+): Exclude<ThinkingStyle, 'auto'> {
+  if (style !== 'auto') return style;
+  const m = model.toLowerCase();
+  // Responses API only exists for OpenAI-style reasoning backends.
+  if (protocol === 'responses') return 'openai';
+  if (isOpenAIReasoningModel(m)) return 'openai';
+  if (/qwen|mimo|deepseek|glm|kimi|ernie|hunyuan/.test(m)) return 'qwen';
+  if (/claude/.test(m)) return 'anthropic';
+  return 'none';
+}
+
+/**
+ * Fields to merge into a Chat Completions request for reasoning control.
+ * `dropTemperature` signals the caller to omit `temperature` entirely
+ * (OpenAI reasoning models reject non-default temperatures).
+ */
+interface ChatReasoningParams {
+  temperature?: number;
+  dropTemperature?: boolean;
+  reasoning_effort?: ReasoningLevel;
+  chat_template_kwargs?: Record<string, unknown>;
+  thinking?: { type: string; budget_tokens: number };
+}
+
+/**
+ * Build the reasoning-related fields for a Chat Completions request.
+ * Only returns the fields that should be merged into the request.
+ */
+function buildChatReasoningParams(opts: {
+  level: ReasoningLevel;
+  style: ThinkingStyle;
+  model: string;
+  baseTemperature: number;
+}): ChatReasoningParams {
+  const style = resolveThinkingStyle(opts.style, opts.model, 'chat');
+  const effort = mapLevelToEffort(opts.level);
+  const thinkingEnabled = opts.level !== 'low'; // low = fast/cheap: thinking off
+  // High reasoning → lower temperature for more focused output.
+  const temperature =
+    opts.level === 'high' ? Math.min(opts.baseTemperature, 0.3) : opts.baseTemperature;
+
+  switch (style) {
+    case 'openai':
+      // Reasoning model: the effort is the real control; temperature must be dropped.
+      return { reasoning_effort: effort, dropTemperature: true };
+
+    case 'qwen':
+      // Private chat-template switch. low → explicitly OFF (real token savings),
+      // medium/high → ON with a graduated budget (the real intensity gradient).
+      if (!thinkingEnabled) {
+        return { chat_template_kwargs: { enable_thinking: false }, temperature };
+      }
+      return {
+        chat_template_kwargs: {
+          enable_thinking: true,
+          thinking_budget: THINKING_BUDGET[opts.level],
+        },
+        temperature,
+      };
+
+    case 'anthropic':
+      if (!thinkingEnabled) return { temperature };
+      // Anthropic requires temperature=1 when extended thinking is on.
+      return {
+        thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET[opts.level] },
+        dropTemperature: true,
+      };
+
+    case 'none':
+    default:
+      // Non-reasoning model: only steer via temperature.
+      return { temperature };
+  }
+}
+
+/**
+ * Build the `reasoning` block for a Responses API request.
+ */
+function buildResponsesReasoning(
+  level: ReasoningLevel
+): { effort: ReasoningLevel; summary: 'auto' } {
+  return { effort: mapLevelToEffort(level), summary: 'auto' };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Parameter normalization
+// ─────────────────────────────────────────────────────────────────────────
 
 /** Clamp a requested max-tokens to what the model actually allows. */
 function clampMaxTokens(requested: number | undefined, capMax: number): number {
@@ -111,7 +259,6 @@ export function normalizeChatParams(
   const wantsReasoning =
     capability.supportsReasoning || isOpenAIReasoningModel(model) || style === 'qwen';
   if (wantsReasoning) {
-    // Reuse the proven reasoning mapping from ./reasoning.ts.
     const r = buildChatReasoningParams({
       level,
       style,
@@ -186,6 +333,3 @@ export function resolveCapability(
     thinking: explicit.thinking ?? inferred.thinking,
   };
 }
-
-/** Re-export so callers can map the UI level without reaching into reasoning.ts. */
-export { mapLevelToEffort };

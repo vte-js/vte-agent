@@ -5,7 +5,7 @@ import { AgentEngine, AgentMode } from '../agent/engine';
 import { ModelCapability } from '../core/types';
 import { inferCapability } from '../agent/model-catalog';
 import { DEFAULT_PERMISSION_CONFIG, type PermissionConfig } from '../core/permissions';
-import { resolveApiProtocol } from '../agent/reasoning';
+import { resolveApiProtocol } from '../agent/llm-schema';
 import { getAllTasks } from '../agent/tasks';
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../skills/builtin';
 import { getSessionStats, getRecentRecords } from '../agent/token-tracker';

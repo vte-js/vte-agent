@@ -267,11 +267,9 @@ export class AgentEngine {
     }
   }
 
-  // ── Reasoning Level ──
-
-  private reasoningLevel: ReasoningLevel = 'medium';
   // Normalized LLM params (provider-agnostic) — the single source of truth
   // for what is sent to the model; llm-schema.ts maps it per provider family.
+  // `reasoningEffort` (set via setReasoningLevel) is the unified reasoning knob.
   private params: LLMParams = {};
   // Model capability — gates which request fields are emitted.
   private capability: ModelCapability;
@@ -280,7 +278,8 @@ export class AgentEngine {
   private thinkingStyle: ThinkingStyle = 'auto';
 
   setReasoningLevel(level: ReasoningLevel) {
-    this.reasoningLevel = level;
+    // reasoningEffort is the single source of truth; llm-schema maps it
+    // onto each provider's native field (reasoning_effort / thinking / …).
     this.params.reasoningEffort = level;
   }
 
@@ -295,7 +294,7 @@ export class AgentEngine {
   }
 
   getReasoningLevel(): ReasoningLevel {
-    return this.reasoningLevel;
+    return this.params.reasoningEffort ?? 'medium';
   }
 
   /**
@@ -613,10 +612,11 @@ export class AgentEngine {
     }
 
     // Build system prompt using template engine
+    const reasoningLevel = this.params.reasoningEffort ?? 'medium';
     let reasoningInstruction = '';
-    if (this.reasoningLevel === 'high') {
+    if (reasoningLevel === 'high') {
       reasoningInstruction = 'Take time to think deeply. Analyze the problem from multiple angles before providing your answer. Consider edge cases, potential issues, and alternative approaches.';
-    } else if (this.reasoningLevel === 'medium') {
+    } else if (reasoningLevel === 'medium') {
       reasoningInstruction = 'Think step by step before answering.';
     }
     const customInstructions = [

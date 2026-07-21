@@ -11,7 +11,6 @@
  */
 
 import { ModelCapability } from '../core/types';
-import { isOpenAIReasoningModel } from './reasoning';
 
 /** Fallback used when nothing matches. Conservative but safe. */
 export const DEFAULT_CAPABILITY: ModelCapability = {
@@ -91,4 +90,22 @@ export function inferCapability(model: string, overrides?: Partial<ModelCapabili
     thinking: reasoning,
   };
   return { ...base, ...overrides };
+}
+
+/**
+ * Detect whether an OpenAI-family model is a reasoning model
+ * (o-series, gpt-5.x and newer). These accept `reasoning_effort` /
+ * `reasoning.effort` and ignore/reject a custom temperature.
+ *
+ * Single source of truth, living at the model-knowledge layer so that
+ * both `llm-schema` (field mapping) and `model-catalog` (capability
+ * inference) share one definition with no circular import.
+ */
+export function isOpenAIReasoningModel(model: string): boolean {
+  const m = model.toLowerCase();
+  // o1 / o3 / o4 ... families
+  if (/^o[1-9](-|$|[a-z])/.test(m)) return true;
+  // gpt-5 and beyond
+  if (/gpt-([5-9]|\d{2,})/.test(m)) return true;
+  return false;
 }
