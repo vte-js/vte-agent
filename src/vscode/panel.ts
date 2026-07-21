@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AgentEngine, AgentMode } from '../agent/engine';
+import { ModelCapability } from '../core/types';
+import { inferCapability } from '../agent/model-catalog';
 import { DEFAULT_PERMISSION_CONFIG, type PermissionConfig } from '../core/permissions';
 import { resolveApiProtocol } from '../agent/reasoning';
 import { getAllTasks } from '../agent/tasks';
@@ -1252,7 +1254,7 @@ Example usage here
 
         // Apply API protocol + thinking style from the active model profile.
         // Falls back to 'chat' + 'auto' (style is inferred from the model name).
-        const profiles = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'; contextWindow?: number }>>('models', []);
+        const profiles = config.get<Array<{ name: string; apiKey: string; apiBase: string; model: string; api?: 'chat' | 'responses'; thinkingStyle?: 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'; contextWindow?: number; capability?: ModelCapability }>>('models', []);
         const activeIdx = config.get<number>('activeModelIndex', 0);
         const activeProfile = profiles[activeIdx];
         // Smart-default the protocol when the profile doesn't set `api`:
@@ -1265,6 +1267,9 @@ Example usage here
         this.engine.setThinkingStyle(activeProfile?.thinkingStyle || 'auto');
         // Model-aware context window: explicit profile value wins, else engine infers from model name.
         this.engine.setContextWindow(activeProfile?.contextWindow);
+        // Normalized params flow through ONE schema; capability gates which
+        // native request fields are emitted per model family.
+        this.engine.setCapability(activeProfile?.capability ?? inferCapability(resolvedModel));
         log(`[DEBUG] Engine created: protocol=${resolvedProtocol}${activeProfile?.api ? '' : ' (auto)'} thinkingStyle=${activeProfile?.thinkingStyle || 'auto'} model=${resolvedModel} base=${resolvedBase}`);
 
         // Initialize host adapter for tools
@@ -1401,7 +1406,7 @@ Example usage here
           }
         }
       }
-      const rawReply = await this.engine.chat(text, temperature, topP, maxTokens, images, enrichedContext);
+      const rawReply = await this.engine.chat(text, { temperature, topP, maxTokens }, images, enrichedContext);
       // Strip <system-reminder> tags — these are for LLM context only, not for display
       let reply = this.stripSystemReminder(rawReply);
       // Extract <next_step> suggestion — only accept actionable steps, reject questions

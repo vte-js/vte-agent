@@ -20,9 +20,7 @@ import {
   LLMResponse,
   ResponsesRequest,
   ResponsesInputItem,
-  ReasoningLevel,
 } from '../core/types';
-import { buildResponsesReasoning, responsesDropsTemperature } from './reasoning';
 
 type StreamEvent =
   | { type: 'stream_chunk'; text: string }
@@ -35,10 +33,13 @@ interface CallResponsesOptions {
   messages: AgentMessage[];
   instructions: string;
   tools: ToolDefinition[];
-  temperature?: number;
-  topP?: number;
-  maxTokens?: number;
-  reasoningLevel: ReasoningLevel;
+  /**
+   * Pre-normalized request fragment produced by `llm-schema`
+   * (max_output_tokens, reasoning, temperature gating, …). Spread
+   * directly into the final body — the client no longer hand-assembles
+   * per-vendor fields.
+   */
+  normalized: Partial<ResponsesRequest>;
   abortSignal?: AbortSignal;
   onEvent?: (e: StreamEvent) => void;
 }
@@ -127,15 +128,8 @@ export async function callResponsesAPI(opts: CallResponsesOptions): Promise<LLMR
     input: messagesToResponsesInput(opts.messages),
     tools: opts.tools.length > 0 ? toolsToResponsesTools(opts.tools) : undefined,
     stream: true,
-    reasoning: buildResponsesReasoning(opts.reasoningLevel),
-    ...(opts.topP !== undefined ? { top_p: opts.topP } : {}),
-    ...(opts.maxTokens !== undefined ? { max_output_tokens: opts.maxTokens } : {}),
+    ...opts.normalized,
   };
-
-  // Reasoning models reject a custom temperature; only send it otherwise.
-  if (!responsesDropsTemperature(opts.model) && opts.temperature !== undefined) {
-    request.temperature = opts.temperature;
-  }
 
   const url = `${opts.apiBase.replace(/\/$/, '')}/responses`;
   console.log(

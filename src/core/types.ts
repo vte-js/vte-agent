@@ -140,6 +140,76 @@ export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | '
  */
 export type ThinkingStyle = 'openai' | 'qwen' | 'anthropic' | 'none' | 'auto'
 
+// ── Normalized LLM Params (provider-agnostic, Cline-style) ──
+
+/**
+ * Which provider family a model belongs to. Drives how the *normalized*
+ * `LLMParams` get mapped onto a concrete request body. This is the analogue of
+ * Cline's per-provider `ApiHandler` — one normalization entry point, dispatched
+ * by family so every backend speaks its own field names + constraints.
+ *
+ *   - 'openai'    → OpenAI Chat/Responses + every OpenAI-compatible gateway
+ *                   (DeepSeek, Qwen, vLLM, OpenRouter, Azure, …). Field names
+ *                   are the OpenAI standard (`max_tokens`, `top_p`, …).
+ *   - 'anthropic' → Claude (native Messages API / Bedrock). Requires `max_tokens`,
+ *                   expresses thinking via `thinking.budget_tokens`.
+ *   - 'gemini'    → Google Gemini (AI Studio / Vertex). Uses `maxOutputTokens`,
+ *                   `topP`, `topK` and nested `generationConfig` semantics.
+ *   - 'qwen'      → Qwen / MiMo / DeepSeek-family thinking switch
+ *                   (`chat_template_kwargs.enable_thinking`). Speaks OpenAI-compatible
+ *                   wire format but needs the private thinking toggle.
+ */
+export type ProviderFamily = 'openai' | 'anthropic' | 'gemini' | 'qwen'
+
+/**
+ * Normalized, provider-agnostic user-facing LLM parameters.
+ * The UI/config layer only ever deals with THIS shape; `llm-schema.ts` maps it
+ * onto each backend's native request fields. (Analogue of Cline's
+ * `ApiHandlerOptions` tunables, trimmed to what VTE exposes.)
+ */
+export interface LLMParams {
+  /** Sampling temperature, 0–2. Dropped automatically for reasoning models. */
+  temperature?: number
+  /** Nucleus sampling, 0–1. */
+  topP?: number
+  /** Top-K sampling (Gemini / Qwen-family only — omitted elsewhere). */
+  topK?: number
+  /** Max output tokens. Clamped to the model's `capability.maxTokens`. */
+  maxTokens?: number
+  /** User-facing reasoning dial (low/medium/high). Maps onto each backend's
+   *  native reasoning control (reasoning_effort / thinking / enable_thinking). */
+  reasoningEffort?: ReasoningLevel
+  /** Explicit thinking-token budget override (Anthropic `budget_tokens`,
+   *  Qwen `thinking_budget`). Falls back to the level-derived default. */
+  thinkingBudgetTokens?: number
+  frequencyPenalty?: number
+  presencePenalty?: number
+  stop?: string[]
+}
+
+/**
+ * Describes what a model CAN do. The analogue of Cline's `ModelInfo` — used to
+ * gate which normalized params are actually emitted (e.g. a non-reasoning model
+ * never receives a `thinking` block). Inferred from the model name when the host
+ * does not supply an explicit `ModelCapability`.
+ */
+export interface ModelCapability {
+  id: string
+  /** Total context window in tokens. */
+  contextWindow: number
+  /** Max output tokens the model allows. */
+  maxTokens: number
+  supportsImages?: boolean
+  /** Whether the backend honors prompt-cache / cache_control markers. */
+  supportsPromptCache?: boolean
+  /** Whether the model supports a thinking / reasoning mode. */
+  supportsReasoning?: boolean
+  thinking?: {
+    maxBudget?: number
+    defaultBudget?: number
+  }
+}
+
 /**
  * A configured model the user can switch between.
  */
@@ -159,6 +229,18 @@ export interface ModelProfile {
    * them, without waiting for an inference-rule update.
    */
   contextWindow?: number
+  /**
+   * Normalized LLM parameters for this specific model profile. Hosts may
+   * persist per-model overrides here; falls back to the engine/global
+   * defaults when absent.
+   */
+  params?: LLMParams
+  /**
+   * Explicit capability descriptor. When supplied, it takes precedence over
+   * name-based inference (`inferCapability`) for gating which request fields
+   * are emitted (reasoning, images, prompt-cache, …).
+   */
+  capability?: ModelCapability
 }
 
 // ── LLM Types ──
@@ -175,7 +257,11 @@ export interface LLMRequest {
   tools?: unknown[]
   temperature?: number
   top_p?: number
+  top_k?: number
   max_tokens?: number
+  frequency_penalty?: number
+  presence_penalty?: number
+  stop?: string[]
   stream?: boolean
   stream_options?: { include_usage?: boolean }
   chat_template_kwargs?: Record<string, unknown>
@@ -208,7 +294,9 @@ export interface ResponsesRequest {
   tools?: unknown[]
   temperature?: number
   top_p?: number
+  top_k?: number
   max_output_tokens?: number
+  stop?: string[]
   stream?: boolean
   reasoning?: { effort?: ReasoningEffort; summary?: 'auto' | 'concise' | 'detailed' }
   text?: { verbosity?: 'low' | 'medium' | 'high' }

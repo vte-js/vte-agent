@@ -4,7 +4,7 @@
  */
 
 import * as path from 'path';
-import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint, ApiProtocol, ThinkingStyle, ReasoningLevel, ProjectIndex } from '../shared/types';
+import { ContextManager, AgentMessage, ToolDefinition, LLMRequest, LLMResponse, ToolResult, Checkpoint, ApiProtocol, ThinkingStyle, ReasoningLevel, ProjectIndex, LLMParams, ModelCapability } from '../shared/types';
 import { formatIndexForLLM } from '../context/protocol';
 import {
   createTokenBudget,
@@ -31,7 +31,7 @@ import { registerTools, getAllTools } from './registry';
 import { TaskMode, analyzeComplexity, checkLLMLaziness, getComplexityInstruction } from './complexity';
 import { recordUsage, getSessionStats, getRecentRecords } from './token-tracker';
 import { PermissionConfig, DEFAULT_PERMISSION_CONFIG, getPermissionLevel, TOOL_CATEGORIES } from '../core/permissions';
-import { buildChatReasoningParams } from './reasoning';
+import { normalizeChatParams, normalizeResponsesParams, resolveCapability } from './llm-schema';
 import { callResponsesAPI } from './responses-client';
 import {
   compactMessages,
@@ -123,13 +123,19 @@ export class AgentEngine {
     apiKey: string = '',
     apiBase: string = 'https://api.openai.com/v1',
     workspaceRoot: string = '',
-    contextWindow?: number
+    contextWindow?: number,
+    params?: LLMParams,
+    capability?: ModelCapability
   ) {
     this.context = context;
     this.model = model;
     this.apiKey = apiKey;
     this.apiBase = apiBase;
     this.workspaceRoot = workspaceRoot;
+    // Normalized params + capability: explicit host-supplied values win,
+    // name-inferred fallback keeps new models working out of the box.
+    this.params = params ?? {};
+    this.capability = resolveCapability(model, capability);
     // Model-aware effective window: explicit wins, else infer from name.
     // Auto-scales as vendors ship larger contexts — no magic count to retune.
     this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : inferContextWindow(model);
@@ -264,12 +270,28 @@ export class AgentEngine {
   // ── Reasoning Level ──
 
   private reasoningLevel: ReasoningLevel = 'medium';
+  // Normalized LLM params (provider-agnostic) — the single source of truth
+  // for what is sent to the model; llm-schema.ts maps it per provider family.
+  private params: LLMParams = {};
+  // Model capability — gates which request fields are emitted.
+  private capability: ModelCapability;
   // Which wire protocol / thinking dialect to use for this model.
   private apiProtocol: ApiProtocol = 'chat';
   private thinkingStyle: ThinkingStyle = 'auto';
 
   setReasoningLevel(level: ReasoningLevel) {
     this.reasoningLevel = level;
+    this.params.reasoningEffort = level;
+  }
+
+  /** Merge normalized LLM params (host config → engine). */
+  setParams(p: Partial<LLMParams>): void {
+    this.params = { ...this.params, ...p };
+  }
+
+  /** Override the model capability descriptor (gates emitted request fields). */
+  setCapability(c: ModelCapability): void {
+    this.capability = c;
   }
 
   getReasoningLevel(): ReasoningLevel {
@@ -521,7 +543,7 @@ export class AgentEngine {
     return this.mode;
   }
 
-  async chat(userMessage: string, temperature?: number, topP?: number, maxTokens?: number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string; content: string }>): Promise<string> {
+  async chat(userMessage: string, paramsOverride?: Partial<LLMParams> | number, images?: Array<{ name: string; dataUrl: string; mimeType: string }>, context?: Array<{ path: string; name: string; content: string }>): Promise<string> {
     // Create abort controller for this request
     this.abortController = new AbortController();
     this._questionCancelled = false;
@@ -605,6 +627,12 @@ export class AgentEngine {
 
     const systemContent = this.buildSystemPromptWithTemplate(customInstructions || undefined);
 
+    // Merge normalized params: engine defaults ← per-call override.
+    // A bare number is accepted for backwards-compat (legacy `chat(text, temp)`).
+    const p: LLMParams = typeof paramsOverride === 'number'
+      ? { ...this.params, temperature: paramsOverride }
+      : { ...this.params, ...(paramsOverride ?? {}) };
+
     // Layered, token-budget-driven context compaction (see context-compaction.ts)
     await this.manageContext();
 
@@ -624,7 +652,7 @@ export class AgentEngine {
       // Signal a new thinking phase to the webview before every LLM call
       this.onViewUpdate?.({ type: 'thinking_start' });
 
-      const response = await this.callLLM(systemContent, temperature, topP, maxTokens);
+      const response = await this.callLLM(systemContent, p);
       const latencyMs = Date.now() - startTime;
 
       // Record token usage for every LLM call in the loop
@@ -707,7 +735,8 @@ export class AgentEngine {
     }
   }
 
-  private async callLLM(systemContent: string, temperature?: number, topP?: number, maxTokens?: number): Promise<LLMResponse> {
+  private async callLLM(systemContent: string, params?: LLMParams): Promise<LLMResponse> {
+    const p = params ?? this.params;
     console.log(`[VTE][DEBUG] callLLM START: ${this.messages.length} messages in history (protocol=${this.apiProtocol})`);
 
     // ── Responses API branch (native reasoning models: o-series, gpt-5.x) ──
@@ -719,12 +748,9 @@ export class AgentEngine {
         messages: this.messages,
         instructions: systemContent,
         tools: this.tools,
-        temperature,
-        topP,
-        maxTokens,
-        reasoningLevel: this.reasoningLevel,
         abortSignal: this.abortController?.signal,
         onEvent: (e) => this.onViewUpdate?.(e),
+        normalized: normalizeResponsesParams(p, this.capability, this.model, this.apiBase, this.thinkingStyle),
       });
     }
 
@@ -755,15 +781,10 @@ export class AgentEngine {
     const multimodalCount = apiMessages.filter((m: any) => Array.isArray(m.content) && m.content.length > 1).length;
     console.log(`[VTE][DEBUG] API request: ${apiMessages.length} messages, ${multimodalCount} multimodal`);
 
-    // Build reasoning params that actually take effect on this backend
-    // (reasoning_effort for OpenAI reasoning models, enable_thinking+budget for
-    // Qwen/MiMo, thinking budget for Anthropic, temperature-only otherwise).
-    const reasoning = buildChatReasoningParams({
-      level: this.reasoningLevel,
-      style: this.thinkingStyle,
-      model: this.model,
-      baseTemperature: temperature ?? 0.7,
-    });
+    // Normalize the provider-agnostic params into this backend's Chat shape.
+    // Gated by this.capability so a non-reasoning model never receives a
+    // thinking block, and OpenAI reasoning models never receive a temperature.
+    const norm = normalizeChatParams(p, this.capability, this.model, this.apiBase, this.thinkingStyle);
 
     const request: LLMRequest = {
       model: this.model,
@@ -778,16 +799,10 @@ export class AgentEngine {
       })),
       stream: true,
       stream_options: { include_usage: true },
-      ...(topP !== undefined && { top_p: topP }),
-      ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-      // Only send temperature when the backend accepts it (reasoning models reject it).
-      ...(reasoning.dropTemperature ? {} : { temperature: reasoning.temperature }),
-      ...(reasoning.reasoning_effort ? { reasoning_effort: reasoning.reasoning_effort } : {}),
-      ...(reasoning.chat_template_kwargs ? { chat_template_kwargs: reasoning.chat_template_kwargs } : {}),
-      ...(reasoning.thinking ? { thinking: reasoning.thinking } : {}),
+      ...norm,
     };
 
-    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${reasoning.dropTemperature ? 'omit' : reasoning.temperature} effort=${reasoning.reasoning_effort ?? '-'} thinking=${JSON.stringify(reasoning.chat_template_kwargs ?? reasoning.thinking ?? 'none')} reasoning=${this.reasoningLevel}`);
+    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature ?? 'omit'} effort=${request.reasoning_effort ?? '-'} thinking=${JSON.stringify(request.chat_template_kwargs ?? request.thinking ?? 'none')} maxTokens=${request.max_tokens}`);
 
     const response = await fetch(`${this.apiBase}/chat/completions`, {
       method: 'POST',

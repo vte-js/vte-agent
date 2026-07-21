@@ -36,6 +36,7 @@ import { ConfigPersistence, type PersistedConfig, type PermissionConfig } from '
 import { WorkspaceManager, WorkspaceEntry } from './workspace-manager'
 import { type ChatHistoryPayload } from '../../src/agent/history-store'
 import { loadBuiltinSkills, getBuiltinSkillContent } from '../../src/skills/builtin'
+import { inferCapability } from '../../src/agent/model-catalog'
 
 const PORT = Number(process.env.VTE_PORT || 3000)
 const INITIAL_WORKSPACE = process.env.VTE_WORKSPACE || process.cwd()
@@ -384,7 +385,7 @@ async function handleChat(text: string, temperature = 0.7, topP = 1, maxTokens =
     if (typeof regenerateFromUserIndex === 'number' && regenerateFromUserIndex >= 0) {
       (engine as any).truncateHistoryAfterUserIndex?.(regenerateFromUserIndex)
     }
-    const final = await engine.chat(text, temperature, topP, maxTokens)
+    const final = await engine.chat(text, { temperature, topP, maxTokens })
     post({ type: 'response', text: final })
   } catch (e: any) {
     const msg = e?.message || String(e)
@@ -660,6 +661,10 @@ async function switchWorkspace(newPath: string): Promise<void> {
   const ctx = new VTEContextManager(resolved)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, resolved)
   engine.setReasoningLevel((swConfig.reasoningLevel as any) || 'medium')
+  // Normalized LLM params flow through ONE schema; capability gates which
+  // native request fields are emitted per model family.
+  engine.setParams({ temperature: swConfig.temperature, topP: swConfig.topP, maxTokens: swConfig.maxTokens })
+  engine.setCapability(swActive?.capability ?? inferCapability(swActive?.model || engineModel))
   // Model-aware context window: explicit profile value wins, else engine infers from model name.
   engine.setContextWindow(swActive?.contextWindow)
   engine.onViewUpdate = (u) => emitUpdate(u)
@@ -706,6 +711,8 @@ async function main(): Promise<void> {
   const ctx = new VTEContextManager(currentWorkspace)
   engine = new AgentEngine(ctx, engineModel, engineApiKey, engineApiBase, currentWorkspace)
   engine.setReasoningLevel((initConfig.reasoningLevel as any) || 'medium')
+  engine.setParams({ temperature: initConfig.temperature, topP: initConfig.topP, maxTokens: initConfig.maxTokens })
+  engine.setCapability(initActive?.capability ?? inferCapability(initActive?.model || engineModel))
   // Model-aware context window: explicit profile value wins, else engine infers from model name.
   engine.setContextWindow(initActive?.contextWindow)
   // Restore persisted behavioral settings onto the engine at boot, so a
