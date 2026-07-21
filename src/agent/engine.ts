@@ -55,7 +55,7 @@ export class AgentEngine {
   private workspaceRoot: string;
   private shadowGit: ShadowGit;
   // Context management: keep only recent messages, summarize old ones
-  private readonly MAX_HISTORY_MESSAGES = 20;
+  private readonly MAX_HISTORY_MESSAGES = 40;
   private readonly MAX_TOOL_RESULT_CHARS = 2000;
   onViewUpdate?: (update: Record<string, unknown>) => void;
   private permissionConfig: PermissionConfig = { ...DEFAULT_PERMISSION_CONFIG };
@@ -85,6 +85,18 @@ export class AgentEngine {
    * of ask→vague-answer→ask accumulates and is capped. */
   private _clarifyRounds = 0;
   private static readonly MAX_CLARIFY_ROUNDS = 2;
+  /**
+   * Re-exploration guard. Tracks files/dirs the model has already READ or
+   * LISTed or GREPped THIS session. When it does it again, we append a
+   * <system-reminder> nudge telling it to reuse the context it already
+   * has instead of re-reading. This is the main fix for "a simple edit
+   * like 修改 test.ts makes the LLM call the tool chain over and over":
+   * once history trimming evicts an earlier read result (MAX_HISTORY_MESSAGES),
+   * the model loses the file content and re-reads it, which pushes more
+   * messages, which trims again → a re-read thrash loop. A soft nudge
+   * (not a hard block) is enough to break it without losing legitimate
+   * re-reads (cleared below when the file is actually mutated). */
+  private _explored = new Set<string>();
   /** True if the immediately-previous turn ended by asking the user something.
    *  Lets us keep `_clarifyRounds` across an ask→answer continuation while still
    *  resetting it when the user starts a genuinely new task/question. */
@@ -815,6 +827,29 @@ export class AgentEngine {
     return result;
   }
 
+  /**
+   * Stable key for the re-exploration guard. Returns null for tools we don't
+   * want to dedupe (e.g. write/edit/question/execute). For the read-only
+   * exploration tools it returns a normalized target so re-touching the same
+   * file/dir/pattern is detected.
+   */
+  private exploreKey(name: string, args: Record<string, unknown>): string | null {
+    const norm = (p: unknown): string => {
+      const s = (p as string) || '';
+      return path.isAbsolute(s) ? s : path.join(this.workspaceRoot || '', s);
+    };
+    switch (name) {
+      case 'read':
+        return args.path ? `read:${norm(args.path)}` : null;
+      case 'list':
+        return args.path ? `list:${norm(args.path)}` : null;
+      case 'grep':
+        return `grep:${norm(args.path)}${(args.pattern as string) || ''}`;
+      default:
+        return null;
+    }
+  }
+
   private async executeToolCalls(toolCalls: LLMResponse['choices'][0]['message']['tool_calls']): Promise<ToolResult[]> {
     const results: ToolResult[] = [];
 
@@ -1085,6 +1120,24 @@ export class AgentEngine {
         const elapsed = Date.now() - startTime;
         console.log(`[VTE] Tool: ${tc.function.name} (${elapsed}ms)`);
 
+        // ── Re-exploration guard ──
+        // Soft-nudge (not a hard block) when the model re-reads / re-lists /
+        // re-greps a target it already explored this session. Appended to the
+        // tool result so the model sees it in the SAME message as the content.
+        // Keeps simple tasks from looping the tool chain. Cleared when the
+        // model actually mutates that file (so post-edit re-read is allowed).
+        const key = this.exploreKey(tc.function.name, args);
+        if (key && this._explored.has(key)) {
+          result.content += '\n\n<system-reminder>你已在本次会话探索过该目标，其内容已在上方上下文中。除非该文件/目录在本次会话中被你修改过，否则请勿重复读取/列举/搜索，直接基于已有内容动手。</system-reminder>';
+        } else if (key) {
+          this._explored.add(key);
+        }
+        // A real mutation invalidates the cached read → allow a fresh re-read.
+        if ((tc.function.name === 'write' || tc.function.name === 'edit') && args.path) {
+          const p = path.isAbsolute(args.path as string) ? (args.path as string) : path.join(this.workspaceRoot || '', args.path as string);
+          this._explored.delete(`read:${p}`);
+        }
+
         // Auto-track file changes and get diff for edit/write tools
         let diffInfo = '';
         if (['edit', 'write'].includes(tc.function.name) && args.path) {
@@ -1128,6 +1181,7 @@ export class AgentEngine {
     this._questionSessionDone = false;
     this._consecutiveQuestionCalls = 0;
     this._clarifyRounds = 0;
+    this._explored.clear();
   }
 
   /**
