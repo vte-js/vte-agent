@@ -64,8 +64,8 @@ export function mapLevelToEffort(level: ReasoningLevel): ReasoningLevel {
  * explicit budget (Qwen `thinking_budget`, Anthropic `budget_tokens`).
  */
 const THINKING_BUDGET: Record<ReasoningLevel, number> = {
-  minimal: 1024,
-  low: 2048,
+  minimal: 0,
+  low: 1024,
   medium: 8192,
   high: 24576,
   xhigh: 65536,
@@ -134,7 +134,7 @@ function buildChatReasoningParams(opts: {
 }): ChatReasoningParams {
   const style = resolveThinkingStyle(opts.style, opts.model, 'chat');
   const effort = mapLevelToEffort(opts.level);
-  const thinkingEnabled = opts.level !== 'low'; // low = fast/cheap: thinking off
+  const thinkingEnabled = opts.level !== 'low' && opts.level !== 'minimal';
   // High/xhigh reasoning → lower temperature for more focused output.
   const temperature =
     (opts.level === 'high' || opts.level === 'xhigh')

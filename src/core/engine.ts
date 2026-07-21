@@ -310,7 +310,7 @@ export class AgentEngine {
       chat_template_kwargs: { enable_thinking: this.reasoningLevel !== 'low' && this.reasoningLevel !== 'minimal' },
     }
 
-    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature} stream=true thinking=${this.reasoningLevel !== 'low'} reasoning=${this.reasoningLevel}`)
+    console.log(`[VTE] Request: model=${request.model} messages=${request.messages.length} tools=${request.tools?.length} temp=${request.temperature} stream=true thinking=${JSON.stringify(request.chat_template_kwargs ?? 'none')} reasoning=${this.reasoningLevel}`)
 
     const response = await fetch(`${this.config.apiBase}/chat/completions`, {
       method: 'POST',
